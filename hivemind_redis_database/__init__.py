@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import List, Optional, Iterable, Union
 import json
 import time
@@ -12,6 +12,7 @@ from hivemind_plugin_manager.database import Client, AbstractRemoteDB, cast2clie
 
 CREATE_MARKER = "__hivemind_creating__"
 CREATE_MARKER_TTL = 30
+CLIENT_SUPPORTS_METADATA = any(field.name == "metadata" for field in fields(Client))
 
 
 @dataclass
@@ -513,7 +514,7 @@ class RedisDB(AbstractRemoteDB):
 
                 client.client_id = self._get_next_client_id()
 
-            serialized_client = client.serialize()
+            serialized_client = self._serialize_client(client)
 
             if self._legacy_cluster_mode():
                 self.redis.set(item_key, serialized_client)
@@ -575,6 +576,10 @@ class RedisDB(AbstractRemoteDB):
             data = json.loads(client_data)
             old_name = data.get('name', '')
             old_api_key = data.get('api_key', '')
+            if CLIENT_SUPPORTS_METADATA and not isinstance(data.get("metadata"), dict):
+                data["metadata"] = {}
+            elif not CLIENT_SUPPORTS_METADATA:
+                data.pop("metadata", None)
 
             # Revoke credentials
             data['name'] = ""
@@ -621,6 +626,33 @@ class RedisDB(AbstractRemoteDB):
         for attr in ['message_blacklist', 'intent_blacklist', 'skill_blacklist']:
             if not hasattr(client, attr) or getattr(client, attr) is None:
                 setattr(client, attr, [])
+        if CLIENT_SUPPORTS_METADATA and (
+            not hasattr(client, "metadata") or not isinstance(client.metadata, dict)
+        ):
+            client.metadata = {}
+
+    def _serialize_client(self, client: Client) -> str:
+        """Serialize clients without metadata when using older plugin-manager."""
+        data = dict(client.__dict__)
+        if CLIENT_SUPPORTS_METADATA:
+            if not isinstance(data.get("metadata"), dict):
+                data["metadata"] = {}
+        else:
+            data.pop("metadata", None)
+        return json.dumps(data, sort_keys=True, ensure_ascii=False)
+
+    def _deserialize_client(self, client_data) -> Client:
+        """Deserialize clients written before or after metadata support."""
+        if isinstance(client_data, str):
+            client_data = json.loads(client_data)
+        if not CLIENT_SUPPORTS_METADATA and isinstance(client_data, dict):
+            client_data = dict(client_data)
+            client_data.pop("metadata", None)
+        elif CLIENT_SUPPORTS_METADATA and isinstance(client_data, dict):
+            if not isinstance(client_data.get("metadata"), dict):
+                client_data = dict(client_data)
+                client_data["metadata"] = {}
+        return cast2client(client_data)
 
     def update_client(self, client: Client) -> bool:
         """
@@ -639,16 +671,16 @@ class RedisDB(AbstractRemoteDB):
                 LOG.warning(f"Client '{client.client_id}' not found for update")
                 return False
 
-            old_client = cast2client(old_client_data)
+            old_client = self._deserialize_client(old_client_data)
             self._ensure_client_attributes(client)
 
             if self._legacy_cluster_mode():
-                self.redis.set(item_key, client.serialize())
+                self.redis.set(item_key, self._serialize_client(client))
                 LOG.debug(f"Successfully updated client '{client.client_id}' in legacy cluster mode")
                 return True
 
             p = self._pipeline()
-            p.set(item_key, client.serialize())
+            p.set(item_key, self._serialize_client(client))
             
             # Update indices only if values changed
             if old_client.name != client.name:
@@ -782,7 +814,7 @@ class RedisDB(AbstractRemoteDB):
                     self.redis.delete(item_key)
                     continue
                 try:
-                    client = cast2client(client_data)
+                    client = self._deserialize_client(client_data)
                     self._ensure_client_attributes(client)
                     client_records.append(client)
                     max_client_id = max(max_client_id, int(client.client_id))
@@ -864,7 +896,7 @@ class RedisDB(AbstractRemoteDB):
             if not client_data or client_data == CREATE_MARKER:
                 continue
             try:
-                client = cast2client(client_data)
+                client = self._deserialize_client(client_data)
                 if not include_revoked and client.api_key == "revoked":
                     continue
                 self._ensure_client_attributes(client)
