@@ -41,6 +41,7 @@ class RedisDB(AbstractRemoteDB):
         db (Optional[int]): Redis database number for single instance
         cluster_nodes (Optional[List[dict]]): Redis Cluster node configuration
         cluster_hash_tag (Optional[str]): Fixed Redis Cluster hash tag for single-slot writes
+        require_redisearch (bool): Fail initialization when RediSearch is unavailable
         index_prefix (str): Key prefix for all database operations (default: "client")
         max_connections (int): Maximum connection pool size (default: 5)
         retry_attempts (int): Number of retry attempts (default: 3)
@@ -60,6 +61,7 @@ class RedisDB(AbstractRemoteDB):
     db: Optional[int] = 0
     cluster_nodes: Optional[List[dict]] = None
     cluster_hash_tag: Optional[str] = None
+    require_redisearch: bool = False
     index_prefix: str = "client"
     max_connections: int = 5
     retry_attempts: int = 3
@@ -109,6 +111,8 @@ class RedisDB(AbstractRemoteDB):
         if self.redisearch_available:
             self._setup_redisearch_index()
             LOG.info("RediSearch module detected, enabling advanced search features")
+        elif self.require_redisearch:
+            raise redis.RedisError("RediSearch module is required but not available")
         else:
             LOG.info("RediSearch module not available, using basic indexing")
 
@@ -134,6 +138,13 @@ class RedisDB(AbstractRemoteDB):
             self.cluster_hash_tag = self.cluster_hash_tag.strip()
         if self.cluster_hash_tag == "":
             self.cluster_hash_tag = None
+        if isinstance(self.require_redisearch, str):
+            self.require_redisearch = self.require_redisearch.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
         if self.ssl is not None:
             self.use_ssl = bool(self.ssl)
 

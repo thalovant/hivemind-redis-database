@@ -220,6 +220,26 @@ class RedisDBTests(unittest.TestCase):
         self.assertEqual(db.port, 6379)
         self.assertTrue(db.use_ssl)
 
+    def test_require_redisearch_fails_fast_when_module_missing(self):
+        fake_redis = FakeRedis()
+
+        with patch.object(RedisDB, "_detect_cluster", return_value=False), \
+                patch.object(RedisDB, "_create_single_connection", return_value=fake_redis), \
+                patch.object(RedisDB, "_check_redisearch_availability", return_value=False), \
+                patch.object(RedisDB, "health_check", return_value=True):
+            with self.assertRaisesRegex(redis.RedisError, "RediSearch module is required"):
+                RedisDB(require_redisearch=True)
+
+    def test_require_redisearch_accepts_string_truthy_values(self):
+        fake_redis = FakeRedis()
+
+        with patch.object(RedisDB, "_detect_cluster", return_value=False), \
+                patch.object(RedisDB, "_create_single_connection", return_value=fake_redis), \
+                patch.object(RedisDB, "_check_redisearch_availability", return_value=False), \
+                patch.object(RedisDB, "health_check", return_value=True):
+            with self.assertRaises(redis.RedisError):
+                RedisDB(require_redisearch="true")
+
     def test_get_startup_nodes_accepts_documented_dict_shape(self):
         db = object.__new__(RedisDB)
         db.cluster_nodes = [{"host": "redis-node1", "port": 6379}]
