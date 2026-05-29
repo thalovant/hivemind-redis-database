@@ -8,8 +8,8 @@ on:
 jobs:
   lint:
     uses: OpenVoiceOS/gh-automations/.github/workflows/lint.yml@dev
-    secrets: inherit
     with:
+      python_version: '3.14'
       ruff: true
       pre_commit: false   # set true if .pre-commit-config.yaml exists
-      pr_comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      pr_comment: ${{ github.event_name == 'pull_request' }}

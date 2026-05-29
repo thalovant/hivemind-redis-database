@@ -5,13 +5,42 @@ on:
     branches: [dev]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   coverage:
-    uses: OpenVoiceOS/gh-automations/.github/workflows/coverage.yml@dev
-    with:
-      python_version: '3.14'
-      coverage_source: 'hivemind_redis_database'
-      test_path: 'tests/'
-      install_extras: ''
-      min_coverage: 0
-      pr_comment: ${{ github.event_name == 'pull_request' }}
+    name: coverage (3.14)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-cov coverage[toml]
+          python -m pip install -e .
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ \
+            --cov=hivemind_redis_database \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            --cov-report=html \
+            -v
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+          if-no-files-found: warn
