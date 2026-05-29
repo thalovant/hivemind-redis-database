@@ -12,4 +12,4 @@ jobs:
       python_versions: '["3.14"]'
       install_extras: 'test'
       test_path: 'tests'
-      pr_comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      pr_comment: ${{ github.event_name == 'pull_request' }}
