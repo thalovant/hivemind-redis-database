@@ -1,3 +1,7 @@
+permissions:
+  contents: read
+  pull-requests: write
+
 name: Release Preview
 
 on:
@@ -8,7 +12,7 @@ on:
 jobs:
   release_preview:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: OpenVoiceOS/gh-automations/.github/workflows/release-preview.yml@dev
+    uses: OpenVoiceOS/gh-automations/.github/workflows/release-preview.yml@02b4bf45467b832c0e03c2e15ed02daa584b8386 # dev
     with:
       python_version: '3.14'
       package_name: 'hivemind_redis_database'
