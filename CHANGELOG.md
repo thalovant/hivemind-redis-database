@@ -1,24 +1,41 @@
 # Changelog
 
-## [0.0.3a2](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.0.3a2) (2026-04-14)
+## [0.0.4a1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.4a1) (2026-07-13)
 
-[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.0.3a1...0.0.3a2)
-
-**Implemented enhancements:**
-
-- Refactoring [\#7](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/7) ([goldyfruit](https://github.com/goldyfruit))
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.3...0.0.4a1)
 
 **Merged pull requests:**
 
-- ci: modernize workflows to OpenVoiceOS standards [\#14](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/14) ([JarbasAl](https://github.com/JarbasAl))
+- Harden organization security controls [\#2](https://github.com/thalovant/hivemind-redis-database/pull/2) ([goldyfruit](https://github.com/goldyfruit))
+- Preserve client metadata [\#1](https://github.com/thalovant/hivemind-redis-database/pull/1) ([goldyfruit](https://github.com/goldyfruit))
 
-## [0.0.3a1](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.0.3a1) (2025-12-18)
+## [0.0.3](https://github.com/thalovant/hivemind-redis-database/tree/0.0.3) (2026-04-14)
 
-[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.0.2...0.0.3a1)
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.3a2...0.0.3)
 
-**Merged pull requests:**
+## [0.0.3a2](https://github.com/thalovant/hivemind-redis-database/tree/0.0.3a2) (2026-04-14)
 
-- chore: Configure Renovate [\#8](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/8) ([renovate[bot]](https://github.com/apps/renovate))
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.3a1...0.0.3a2)
+
+## [0.0.3a1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.3a1) (2025-12-18)
+
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.2...0.0.3a1)
+
+## [0.0.2](https://github.com/thalovant/hivemind-redis-database/tree/0.0.2) (2024-12-29)
+
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.2a2...0.0.2)
+
+## [0.0.2a2](https://github.com/thalovant/hivemind-redis-database/tree/0.0.2a2) (2024-12-29)
+
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.2a1...0.0.2a2)
+
+## [0.0.2a1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.2a1) (2024-12-29)
+
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.1...0.0.2a1)
+
+## [0.0.1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.1) (2024-12-28)
+
+[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/696592dac1fbb7312b0fb034f9586122ccfd4b1e...0.0.1)
 
 
 
