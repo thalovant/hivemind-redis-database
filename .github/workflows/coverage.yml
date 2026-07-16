@@ -1,5 +1,7 @@
 permissions:
-  contents: read
+  # The pinned reusable workflow declares contents:write for its optional
+  # Pages path; GitHub validates that permission even when Pages is disabled.
+  contents: write
   pull-requests: write
 
 name: Code Coverage
