@@ -14,6 +14,24 @@ from hivemind_plugin_manager.database import (Client, AbstractDB,
 CREATE_MARKER = "__hivemind_creating__"
 CREATE_MARKER_TTL = 30
 
+_ADVANCE_LAST_SEEN_LUA = """
+local raw = redis.call('GET', KEYS[1])
+if not raw or raw == ARGV[3] then
+    return 0
+end
+local client = cjson.decode(raw)
+if client.api_key ~= ARGV[1] then
+    return 0
+end
+local current = tonumber(client.last_seen) or -1
+local incoming = tonumber(ARGV[2])
+if incoming > current then
+    client.last_seen = incoming
+    redis.call('SET', KEYS[1], cjson.encode(client))
+end
+return 1
+"""
+
 
 def _iter_client_records_safely(db) -> "Iterable[tuple[str, str]]":
     """Yield (key, raw_value) pairs for every stored client record in the
@@ -818,6 +836,26 @@ class RedisDB(AbstractRemoteDB):
             return True
         except Exception as e:
             LOG.error(f"Failed to update client '{client.client_id}': {e}")
+            return False
+
+    def update_last_seen(self, api_key: str, seen_at: float) -> bool:
+        """Atomically advance ``last_seen`` for the matching API key."""
+        try:
+            client = self.get_client_by_api_key(api_key)
+            if client is None:
+                return False
+            return bool(
+                self.redis.eval(
+                    _ADVANCE_LAST_SEEN_LUA,
+                    1,
+                    self._client_key(client.client_id),
+                    api_key,
+                    float(seen_at),
+                    CREATE_MARKER,
+                )
+            )
+        except Exception as e:
+            LOG.error(f"Failed to update last_seen for client '{api_key}': {e}")
             return False
 
     def get_client_by_id(self, client_id: int) -> Optional[Client]:

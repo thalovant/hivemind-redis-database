@@ -102,6 +102,18 @@ class FakeRedis:
     def ping(self):
         return True
 
+    def eval(self, _script, numkeys, key, api_key, seen_at, create_marker):
+        assert numkeys == 1
+        raw = self.get(key)
+        if not raw or raw == create_marker:
+            return 0
+        client = json.loads(raw)
+        if client.get("api_key") != api_key:
+            return 0
+        client["last_seen"] = max(float(client.get("last_seen", -1)), float(seen_at))
+        self.set(key, json.dumps(client))
+        return 1
+
 
 class FakePipeline:
     def __init__(self, redis_client):
@@ -467,6 +479,33 @@ class RedisDBTests(unittest.TestCase):
 
         self.assertIsNone(found)
         self.assertEqual(redis_client.scan_count, 0)
+
+    def test_update_last_seen_never_moves_timestamp_backward(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client)
+        client = Client(client_id=1, api_key="alpha-key", name="alpha", last_seen=200.0)
+        self.assertTrue(db.add_item(client))
+
+        self.assertTrue(db.update_last_seen("alpha-key", 100.0))
+        self.assertEqual(db.get_client_by_api_key("alpha-key").last_seen, 200.0)
+
+        self.assertTrue(db.update_last_seen("alpha-key", 300.0))
+        self.assertEqual(db.get_client_by_api_key("alpha-key").last_seen, 300.0)
+
+    def test_update_last_seen_rejects_missing_or_reassigned_api_key(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client)
+        client = Client(client_id=1, api_key="alpha-key", name="alpha")
+        self.assertTrue(db.add_item(client))
+
+        self.assertFalse(db.update_last_seen("missing-key", 100.0))
+
+        redis_client.storage["client:client:1"] = Client(
+            client_id=1,
+            api_key="replacement-key",
+            name="alpha",
+        ).serialize()
+        self.assertFalse(db.update_last_seen("alpha-key", 100.0))
 
     def test_search_by_api_key_does_not_scan_on_index_miss(self):
         redis_client = FakeRedis()
