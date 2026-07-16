@@ -54,7 +54,7 @@ class RedisDB(AbstractRemoteDB):
         cluster_nodes (Optional[List[dict]]): Redis Cluster node configuration
         cluster_hash_tag (Optional[str]): Fixed Redis Cluster hash tag for single-slot writes
         index_prefix (str): Key prefix for all database operations (default: "client")
-        max_connections (int): Maximum connection pool size (default: 5)
+        max_connections (int): Maximum connection pool size (default: 64)
         retry_attempts (int): Number of retry attempts (default: 3)
         retry_delay (float): Delay between retry attempts in seconds (default: 0.1)
         use_ssl (bool): Enable SSL/TLS connection (default: False)
@@ -73,7 +73,7 @@ class RedisDB(AbstractRemoteDB):
     cluster_nodes: Optional[List[dict]] = None
     cluster_hash_tag: Optional[str] = None
     index_prefix: str = "client"
-    max_connections: int = 5
+    max_connections: int = 64
     retry_attempts: int = 3
     retry_delay: float = 0.1
     use_ssl: bool = False
@@ -368,9 +368,9 @@ class RedisDB(AbstractRemoteDB):
         connection_kwargs.update(self._get_ssl_kwargs())
 
         client = redis.StrictRedis(
-            **connection_kwargs,
             retry=self._retry_policy(),
             retry_on_error=[redis.ConnectionError, redis.TimeoutError],
+            **connection_kwargs,
         )
         self.redis_pool = client.connection_pool
         return client
@@ -919,6 +919,33 @@ class RedisDB(AbstractRemoteDB):
                     res.append(client)
         return res
 
+    def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
+        """Return the client for an API key without requiring a full sync.
+
+        API-key lookup is on the admission path in hivemind-core, so unknown
+        keys must fail through indexed lookups only. ``sync()`` remains the
+        explicit repair path for interrupted/manual writes that leave secondary
+        indexes stale.
+        """
+        if api_key is None:
+            return None
+        api_key = str(api_key)
+
+        if self._legacy_cluster_mode():
+            matches = self._search_brute_force("api_key", api_key)
+            return matches[0] if matches else None
+
+        for client in self._search_with_index("api_key", api_key):
+            if client.api_key == api_key:
+                return client
+
+        if self.redisearch_available:
+            for client in self._search_with_redisearch("api_key", api_key):
+                if client.api_key == api_key:
+                    return client
+
+        return None
+
     def search_by_value(self, key: str, val) -> List[Client]:
         """
         Search for clients by a specific key-value pair in Redis.
@@ -930,6 +957,10 @@ class RedisDB(AbstractRemoteDB):
         Returns:
             A list of clients that match the search criteria.
         """
+        if key == 'api_key':
+            client = self.get_client_by_api_key(val)
+            return [client] if client else []
+
         if self._legacy_cluster_mode():
             return self._search_brute_force(key, val)
 

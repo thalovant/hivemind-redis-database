@@ -25,6 +25,7 @@ class FakeRedis:
         self.connection_pool = Mock()
         self.pipeline_transaction_flags = []
         self.mget_calls = []
+        self.scan_count = 0
 
     def exists(self, key):
         return key in self.storage or key in self.hashes
@@ -88,6 +89,7 @@ class FakeRedis:
         return 1
 
     def scan_iter(self, pattern, count=None):
+        self.scan_count += 1
         del count
         for key in sorted(set(self.storage) | set(self.hashes)):
             if fnmatch(key, pattern):
@@ -295,6 +297,29 @@ class RedisDBTests(unittest.TestCase):
         self.assertEqual(ssl_kwargs["ssl_cert_reqs"], "none")
         self.assertFalse(ssl_kwargs["ssl_check_hostname"])
 
+    @patch("hivemind_redis_database.redis.StrictRedis")
+    def test_create_single_connection_uses_configured_pool_size(self, strict_redis):
+        db = object.__new__(RedisDB)
+        db.host = "redis.example.com"
+        db.port = 6379
+        db.db = 0
+        db.password = "secret"
+        db.username = "default"
+        db.max_connections = 64
+        db.retry_attempts = 3
+        db.retry_delay = 0.1
+        db.use_ssl = False
+        db.ssl_certfile = None
+        db.ssl_keyfile = None
+        db.ssl_ca_certs = None
+        db.ssl_cert_reqs = "required"
+        db.ssl_check_hostname = True
+
+        db._create_single_connection()
+
+        strict_redis.assert_called_once()
+        self.assertEqual(strict_redis.call_args.kwargs["max_connections"], 64)
+
     @patch("hivemind_redis_database.redis.RedisCluster")
     def test_create_cluster_connection_uses_retry_policy(self, redis_cluster):
         db = object.__new__(RedisDB)
@@ -415,6 +440,47 @@ class RedisDBTests(unittest.TestCase):
 
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].metadata, {"owner_id": "owner-123"})
+
+    def test_get_client_by_api_key_uses_secondary_index(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client)
+
+        client = Client(client_id=1, api_key="alpha-key", name="alpha")
+        self.assertTrue(db.add_item(client))
+
+        found = db.get_client_by_api_key("alpha-key")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.client_id, 1)
+        self.assertEqual(redis_client.mget_calls[-1], ["client:client:1"])
+
+    def test_get_client_by_api_key_does_not_scan_on_index_miss(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client)
+        redis_client.storage["client:client:1"] = Client(
+            client_id=1,
+            api_key="alpha-key",
+            name="alpha",
+        ).serialize()
+
+        found = db.get_client_by_api_key("alpha-key")
+
+        self.assertIsNone(found)
+        self.assertEqual(redis_client.scan_count, 0)
+
+    def test_search_by_api_key_does_not_scan_on_index_miss(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client)
+        redis_client.storage["client:client:1"] = Client(
+            client_id=1,
+            api_key="alpha-key",
+            name="alpha",
+        ).serialize()
+
+        found = db.search_by_value("api_key", "alpha-key")
+
+        self.assertEqual(found, [])
+        self.assertEqual(redis_client.scan_count, 0)
 
     def test_client_metadata_survives_sync(self):
         redis_client = FakeRedis()
@@ -711,7 +777,6 @@ class TestRedisDBRefresh(unittest.TestCase):
         db.redisearch_available = False
         fake.storage["client:client:5"] = "__hivemind_creating__"
         self.assertIsNone(db.refresh(5))
-
 
 class TestRedisDBPipelineTransactional(unittest.TestCase):
     """Single-node Redis must use transactional pipelines so add_item /
