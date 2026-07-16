@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import List, Optional, Iterable, Union
 import json
 import time
@@ -7,12 +7,24 @@ import redis
 from redis.cluster import ClusterNode
 from ovos_utils.log import LOG
 
-from hivemind_plugin_manager.database import Client, AbstractRemoteDB, cast2client
+from hivemind_plugin_manager.database import (Client, AbstractDB,
+                                                AbstractRemoteDB, cast2client)
 
 
 CREATE_MARKER = "__hivemind_creating__"
 CREATE_MARKER_TTL = 30
-CLIENT_SUPPORTS_METADATA = any(field.name == "metadata" for field in fields(Client))
+
+
+def _iter_client_records_safely(db) -> "Iterable[tuple[str, str]]":
+    """Yield (key, raw_value) pairs for every stored client record in the
+    active namespace. Used by ``migrate()`` to rewrite records in place.
+    Skips empties; callers must handle ``CREATE_MARKER`` themselves.
+    """
+    for key in db.redis.scan_iter(db._scan_pattern("client"), count=100):
+        raw = db.redis.get(key)
+        if not raw:
+            continue
+        yield key, raw
 
 
 @dataclass
@@ -116,6 +128,8 @@ class RedisDB(AbstractRemoteDB):
             LOG.error("Redis connection health check failed during initialization")
             raise redis.ConnectionError("Failed to establish healthy Redis connection")
 
+        self._maybe_migrate()
+
     def _normalize_parameters(self):
         """Normalize optional parameters and backward-compatible aliases."""
         if self.host is None:
@@ -196,6 +210,9 @@ class RedisDB(AbstractRemoteDB):
     def _counter_key(self) -> str:
         return self._key("count")
 
+    def _schema_version_key(self) -> str:
+        return self._key("schema_version")
+
     def _id_sequence_key(self) -> str:
         return self._key("id_seq")
 
@@ -208,9 +225,19 @@ class RedisDB(AbstractRemoteDB):
         return f"{self._key(*parts)}:*"
 
     def _pipeline(self):
-        if getattr(self, "is_cluster", False) and self.cluster_hash_tag:
-            return self.redis.pipeline(transaction=True)
-        return self.redis.pipeline()
+        """Return a pipeline appropriate for the current Redis topology.
+
+        Single-node Redis: transactional (MULTI/EXEC) so ``add_item`` /
+        ``update_client`` multi-key writes land atomically. Cluster with
+        a hash-tag namespace: transactional within the single slot.
+        Legacy cluster mode (no hash tag) cannot do multi-key MULTI/EXEC
+        across slots, so the pipeline is non-transactional there.
+        """
+        if getattr(self, "is_cluster", False):
+            if self.cluster_hash_tag:
+                return self.redis.pipeline(transaction=True)
+            return self.redis.pipeline()
+        return self.redis.pipeline(transaction=True)
 
     def _legacy_cluster_mode(self) -> bool:
         """Return True when running on Redis Cluster without a hash-tag namespace."""
@@ -455,6 +482,107 @@ class RedisDB(AbstractRemoteDB):
         except TypeError:
             return bool(self.redis.setnx(item_key, CREATE_MARKER))
 
+    def _maybe_migrate(self) -> None:
+        """Run schema migration if the stored namespace version is behind
+        ``SCHEMA_VERSION``.
+
+        The version is stored at a per-namespace key ``{prefix}:schema_version``
+        so multi-hub deployments using ``index_prefix``/``cluster_hash_tag``
+        each track their own migration state. Tolerates older HPM that
+        predates ``SCHEMA_VERSION`` by falling back to ``1``.
+        """
+        target = getattr(AbstractDB, "SCHEMA_VERSION", 1)
+        try:
+            raw = self.redis.get(self._schema_version_key())
+            stored = int(raw) if raw is not None else 1
+        except (ValueError, TypeError):
+            stored = 1
+        # Tolerate older HPM that predates the forward-compat guard, the
+        # same way SCHEMA_VERSION is read defensively above.
+        if hasattr(self, "_check_forward_compat"):
+            self._check_forward_compat(stored)
+        if stored < target:
+            LOG.info("RedisDB: migrating namespace '%s' schema v%d -> v%d",
+                     self._base_prefix(), stored, target)
+            # Bundle the per-record rewrites and the schema sentinel SET
+            # into one MULTI/EXEC so they land atomically — a crash can
+            # never leave the namespace in a "rows migrated but stale
+            # sentinel" (or vice versa) state.
+            try:
+                pipe = self.redis.pipeline(transaction=True)
+            except Exception:
+                pipe = None
+            if pipe is None:
+                self.migrate(from_version=stored)
+                self.redis.set(self._schema_version_key(), int(target))
+            else:
+                self._migrate_into_pipeline(pipe, from_version=stored)
+                pipe.set(self._schema_version_key(), int(target))
+                pipe.execute()
+
+    def migrate(self, from_version: int) -> None:
+        """Migrate stored client records to the current ``SCHEMA_VERSION``.
+
+        Idempotent and crash-safe: a partial migration re-run produces
+        the same final state. A row that has already been migrated has
+        no top-level legacy keys, so the per-row update is a no-op.
+
+        v1 -> v2: fold each record's top-level ``intent_blacklist`` /
+        ``skill_blacklist`` JSON values into the record's ``metadata``
+        dict (``setdefault`` — explicit metadata values are never
+        clobbered), then remove the legacy top-level keys.
+        ``message_blacklist`` is purged outright (the field is not
+        part of the ``Client`` data model); any residual
+        ``metadata["message_blacklist"]`` from a prior migration run
+        is also stripped.
+        """
+        self._migrate_into_pipeline(self.redis, from_version=from_version)
+
+    def _migrate_into_pipeline(self, writer, from_version: int) -> None:
+        """Internal migration loop that issues writes through ``writer``
+        (either ``self.redis`` for a non-transactional pass or a
+        ``Redis.pipeline(transaction=True)`` so the rewrites and the
+        schema sentinel land atomically). ``writer`` must expose a
+        ``.set(key, value)`` method — both ``Redis`` and ``Pipeline``
+        do."""
+        if from_version >= 2:
+            return
+        legacy_keys = ("intent_blacklist", "skill_blacklist")
+        for key, raw in _iter_client_records_safely(self):
+            if raw == CREATE_MARKER:
+                continue
+            try:
+                record = json.loads(raw)
+            except (TypeError, ValueError) as e:
+                LOG.warning("RedisDB migrate v2: skipping unparseable record "
+                            "at %s: %s", key, e)
+                continue
+            if not isinstance(record, dict):
+                continue
+            metadata = record.get("metadata") if isinstance(
+                record.get("metadata"), dict) else {}
+            changed = False
+            # Strip message_blacklist outright (top-level + metadata).
+            if "message_blacklist" in record:
+                record.pop("message_blacklist", None)
+                changed = True
+            if metadata.pop("message_blacklist", None) is not None:
+                changed = True
+            for lk in legacy_keys:
+                if lk in record:
+                    val = record.pop(lk)
+                    changed = True
+                    if val and lk not in metadata:
+                        metadata[lk] = list(val) if isinstance(
+                            val, (list, tuple)) else val
+            if changed:
+                record["metadata"] = metadata
+                try:
+                    writer.set(key, json.dumps(record))
+                except Exception as e:
+                    LOG.error("RedisDB migrate v2: failed to rewrite %s: %s",
+                              key, e)
+
     def add_item(self, client: Client) -> bool:
         """
         Add a new client to the Redis database or update existing client.
@@ -514,7 +642,7 @@ class RedisDB(AbstractRemoteDB):
 
                 client.client_id = self._get_next_client_id()
 
-            serialized_client = self._serialize_client(client)
+            serialized_client = client.serialize()
 
             if self._legacy_cluster_mode():
                 self.redis.set(item_key, serialized_client)
@@ -576,10 +704,8 @@ class RedisDB(AbstractRemoteDB):
             data = json.loads(client_data)
             old_name = data.get('name', '')
             old_api_key = data.get('api_key', '')
-            if CLIENT_SUPPORTS_METADATA and not isinstance(data.get("metadata"), dict):
+            if not isinstance(data.get("metadata"), dict):
                 data["metadata"] = {}
-            elif not CLIENT_SUPPORTS_METADATA:
-                data.pop("metadata", None)
 
             # Revoke credentials
             data['name'] = ""
@@ -617,41 +743,33 @@ class RedisDB(AbstractRemoteDB):
             return False
 
     def _ensure_client_attributes(self, client: Client):
+        """Replace explicit-None list fields with []. Needed for legacy records
+        where a list column was stored as ``null``: ``Client(intent_blacklist=None)``
+        keeps None (``default_factory`` only fires when the kwarg is omitted).
+        ``metadata`` is handled by ``Client.__post_init__`` (>=0.5.0).
         """
-        Ensure client has required attributes initialized.
-
-        Args:
-            client: The client object to initialize attributes for
-        """
-        for attr in ['message_blacklist', 'intent_blacklist', 'skill_blacklist']:
-            if not hasattr(client, attr) or getattr(client, attr) is None:
+        # message_blacklist is no longer part of the Client data model.
+        for attr in ('intent_blacklist', 'skill_blacklist'):
+            if getattr(client, attr, None) is None:
                 setattr(client, attr, [])
-        if CLIENT_SUPPORTS_METADATA and (
-            not hasattr(client, "metadata") or not isinstance(client.metadata, dict)
-        ):
-            client.metadata = {}
 
-    def _serialize_client(self, client: Client) -> str:
-        """Serialize clients without metadata when using older plugin-manager."""
-        data = dict(client.__dict__)
-        if CLIENT_SUPPORTS_METADATA:
-            if not isinstance(data.get("metadata"), dict):
-                data["metadata"] = {}
-        else:
-            data.pop("metadata", None)
-        return json.dumps(data, sort_keys=True, ensure_ascii=False)
+    @staticmethod
+    def _deserialize_client(client_data) -> Client:
+        """Pre-clean a stored record before handing it to ``cast2client``.
 
-    def _deserialize_client(self, client_data) -> Client:
-        """Deserialize clients written before or after metadata support."""
+        ``Client.deserialize`` raises ``TypeError`` if ``metadata`` is present
+        but not a dict (intentional in plugin-manager >=0.5.0). Records written
+        before metadata existed have no ``metadata`` key — they're handled by
+        Client's default factory. Records hand-edited or written by buggy
+        callers may carry a non-dict ``metadata`` value; coerce those to ``{}``
+        here so a single bad row doesn't break iteration over the DB.
+        """
         if isinstance(client_data, str):
             client_data = json.loads(client_data)
-        if not CLIENT_SUPPORTS_METADATA and isinstance(client_data, dict):
+        if isinstance(client_data, dict) and "metadata" in client_data \
+                and not isinstance(client_data["metadata"], dict):
             client_data = dict(client_data)
-            client_data.pop("metadata", None)
-        elif CLIENT_SUPPORTS_METADATA and isinstance(client_data, dict):
-            if not isinstance(client_data.get("metadata"), dict):
-                client_data = dict(client_data)
-                client_data["metadata"] = {}
+            client_data["metadata"] = {}
         return cast2client(client_data)
 
     def update_client(self, client: Client) -> bool:
@@ -675,12 +793,12 @@ class RedisDB(AbstractRemoteDB):
             self._ensure_client_attributes(client)
 
             if self._legacy_cluster_mode():
-                self.redis.set(item_key, self._serialize_client(client))
+                self.redis.set(item_key, client.serialize())
                 LOG.debug(f"Successfully updated client '{client.client_id}' in legacy cluster mode")
                 return True
 
             p = self._pipeline()
-            p.set(item_key, self._serialize_client(client))
+            p.set(item_key, client.serialize())
             
             # Update indices only if values changed
             if old_client.name != client.name:
@@ -701,6 +819,37 @@ class RedisDB(AbstractRemoteDB):
         except Exception as e:
             LOG.error(f"Failed to update client '{client.client_id}': {e}")
             return False
+
+    def get_client_by_id(self, client_id: int) -> Optional[Client]:
+        """Fetch a single client by primary key with one ``GET``.
+
+        Targeted lookup used by :meth:`refresh` on the admission hot
+        path — avoids any ``scan_iter`` / index walk. Returns ``None``
+        if the key is missing, holds a stale create marker, or fails
+        to deserialize.
+        """
+        if client_id is None:
+            return None
+        try:
+            raw = self.redis.get(self._client_key(client_id))
+        except Exception as e:
+            LOG.error(f"Failed to fetch client {client_id} from Redis: {e}")
+            return None
+        if not raw or raw == CREATE_MARKER:
+            return None
+        try:
+            return self._deserialize_client(raw)
+        except Exception as e:
+            LOG.warning(f"Failed to deserialize client {client_id}: {e}")
+            return None
+
+    def refresh(self, client_id: int) -> Optional[Client]:
+        """Targeted single-key fetch — no global ``sync()``.
+
+        Overrides the base default so the admission chain never triggers
+        a full keyspace scan + index rebuild per inbound message.
+        """
+        return self.get_client_by_id(client_id)
 
     def _search_with_redisearch(self, key: str, val: str) -> List[Client]:
         """

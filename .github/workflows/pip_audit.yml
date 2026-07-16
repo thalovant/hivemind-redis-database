@@ -1,5 +1,7 @@
 permissions:
   contents: read
+  pull-requests: write
+  security-events: write
 
 name: PIP Audit
 
@@ -10,7 +12,6 @@ on:
 
 jobs:
   pip_audit:
-    uses: OpenVoiceOS/gh-automations/.github/workflows/pip-audit.yml@02b4bf45467b832c0e03c2e15ed02daa584b8386 # dev
+    uses: OpenVoiceOS/gh-automations/.github/workflows/pip-audit.yml@e1770fb608f8c39ab886ff336f6470ee17747b0d # dev
     with:
-      python_version: '3.14'
-      pr_comment: ${{ github.event_name == 'pull_request' }}
+      pr_comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}

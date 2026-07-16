@@ -1,6 +1,10 @@
-# HiveMind Redis Database
+# hivemind-redis-database
 
-Redis-backed client database plugin for HiveMind-core.
+Redis-backed client database plugin for [hivemind-core](https://github.com/JarbasHiveMind/HiveMind-core).
+
+Implements the [`hivemind-plugin-manager`](https://github.com/JarbasHiveMind/hivemind-plugin-manager)
+`AbstractDB` contract on top of Redis. Suitable for multi-host fleets, high-availability setups,
+and deployments where the database must be shared across multiple hivemind-core processes.
 
 It supports:
 
@@ -269,6 +273,25 @@ Legacy Redis Cluster note:
 - RediSearch acceleration is disabled
 - `cluster_hash_tag` remains the recommended production mode for indexed,
   transactional cluster behavior
+
+## Where it fits
+
+```
+hivemind-core
+  └── hivemind-plugin-manager  (DatabaseFactory loads plugins by entry-point)
+        └── hivemind-redis-database  ← this repo
+              └── redis-py (Redis / RedisCluster) + optional RediSearch module
+```
+
+The plugin registers under the `hivemind.database` entry-point group as
+`hivemind-redis-db-plugin`.
+
+## Docs
+
+- [docs/architecture.md](docs/architecture.md) — key schema, index design, RediSearch, sync()
+- [docs/configuration.md](docs/configuration.md) — full config reference
+- [docs/cluster_consistency.md](docs/cluster_consistency.md) — cluster hash tag, migration plan
+- [docs/operations.md](docs/operations.md) — backup, authoring a plugin
 
 ## Development
 

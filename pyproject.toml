@@ -24,7 +24,7 @@ classifiers = [
 dependencies = [
     "redis>=4.2.0",
     "hiredis>=2.0.0",
-    "hivemind-plugin-manager>=0.3.0,<1.0.0",
+    "hivemind-plugin-manager>=0.5.0,<1.0.0",
     "hivemind-bus-client>=0.4.4",
 ]
 dynamic = ["version"]
@@ -43,6 +43,9 @@ hivemind-redis-migrate-cluster = "hivemind_redis_database.migration:main"
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
+    "fakeredis>=2.0",
+    "hivescope>=0.5.2a1",
+    "hivemind-plugin-manager>=0.7.1a1",
 ]
 
 [tool.setuptools.packages.find]

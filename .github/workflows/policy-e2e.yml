@@ -1,0 +1,27 @@
+permissions:
+  contents: read
+
+name: Policy Migration E2E
+
+on:
+  pull_request:
+    branches: [dev, master]
+  workflow_dispatch:
+
+jobs:
+  policy_e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[test]"
+      # Cross-repo policy stack (published prereleases) + hivescope with db= injection
+      - run: >-
+          pip install
+          "hivescope==0.4.0a2"
+          "hivemind-core==4.3.0a2"
+          "hivemind-ovos-agent-plugin==0.2.0a1"
+          "hivemind-plugin-manager==0.6.0a1"
+      - run: pytest tests/e2e/test_policy_migration_e2e.py -q -p no:cacheprovider

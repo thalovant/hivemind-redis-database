@@ -1,41 +1,70 @@
 # Changelog
 
-## [0.0.4a1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.4a1) (2026-07-13)
+## [0.1.0a6](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a6) (2026-07-16)
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.3...0.0.4a1)
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.1.0a5...0.1.0a6)
 
 **Merged pull requests:**
 
-- Harden organization security controls [\#2](https://github.com/thalovant/hivemind-redis-database/pull/2) ([goldyfruit](https://github.com/goldyfruit))
-- Preserve client metadata [\#1](https://github.com/thalovant/hivemind-redis-database/pull/1) ([goldyfruit](https://github.com/goldyfruit))
+- Revert unauthorized automated merges \(\#31, \#32, \#33\) [\#35](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/35) ([JarbasAl](https://github.com/JarbasAl))
 
-## [0.0.3](https://github.com/thalovant/hivemind-redis-database/tree/0.0.3) (2026-04-14)
+## [0.1.0a5](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a5) (2026-07-16)
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.3a2...0.0.3)
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.1.0a4...0.1.0a5)
 
-## [0.0.3a2](https://github.com/thalovant/hivemind-redis-database/tree/0.0.3a2) (2026-04-14)
+**Merged pull requests:**
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.3a1...0.0.3a2)
+- ci: release safely after fork merges [\#33](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/33) ([goldyfruit](https://github.com/goldyfruit))
+- fix: advance last\_seen atomically [\#32](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/32) ([goldyfruit](https://github.com/goldyfruit))
+- Use indexed API-key lookup and larger Redis pool [\#31](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/31) ([goldyfruit](https://github.com/goldyfruit))
 
-## [0.0.3a1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.3a1) (2025-12-18)
+## [0.1.0a4](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a4) (2026-07-04)
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.2...0.0.3a1)
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.1.0a3...0.1.0a4)
 
-## [0.0.2](https://github.com/thalovant/hivemind-redis-database/tree/0.0.2) (2024-12-29)
+**Merged pull requests:**
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.2a2...0.0.2)
+- Update actions/checkout action to v7 [\#27](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/27) ([renovate[bot]](https://github.com/apps/renovate))
 
-## [0.0.2a2](https://github.com/thalovant/hivemind-redis-database/tree/0.0.2a2) (2024-12-29)
+## [0.1.0a3](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a3) (2026-07-04)
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.2a1...0.0.2a2)
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.1.0a2...0.1.0a3)
 
-## [0.0.2a1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.2a1) (2024-12-29)
+**Merged pull requests:**
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/0.0.1...0.0.2a1)
+- test: hivescope e2e + CI [\#28](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/28) ([JarbasAl](https://github.com/JarbasAl))
 
-## [0.0.1](https://github.com/thalovant/hivemind-redis-database/tree/0.0.1) (2024-12-28)
+## [0.1.0a2](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a2) (2026-06-05)
 
-[Full Changelog](https://github.com/thalovant/hivemind-redis-database/compare/696592dac1fbb7312b0fb034f9586122ccfd4b1e...0.0.1)
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.1.0a1...0.1.0a2)
+
+**Merged pull requests:**
+
+- docs: zero-to-hero README and /docs coverage [\#25](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/25) ([JarbasAl](https://github.com/JarbasAl))
+
+## [0.1.0a1](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a1) (2026-06-05)
+
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.0.4a2...0.1.0a1)
+
+**Merged pull requests:**
+
+- feat\(db\): schema v2 migration — fold legacy blacklist keys into metadata [\#20](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/20) ([JarbasAl](https://github.com/JarbasAl))
+
+## [0.0.4a2](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.0.4a2) (2026-05-20)
+
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.0.4a1...0.0.4a2)
+
+**Merged pull requests:**
+
+- ci: pass PYPI\_TOKEN explicitly, drop secrets:inherit elsewhere [\#21](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/21) ([JarbasAl](https://github.com/JarbasAl))
+
+## [0.0.4a1](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.0.4a1) (2026-05-18)
+
+[Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.0.3...0.0.4a1)
+
+**Merged pull requests:**
+
+- Preserve client metadata \(supersedes \#17\) [\#18](https://github.com/JarbasHiveMind/hivemind-redis-database/pull/18) ([JarbasAl](https://github.com/JarbasAl))
 
 
 
