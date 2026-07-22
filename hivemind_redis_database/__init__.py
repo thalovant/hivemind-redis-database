@@ -960,22 +960,22 @@ class RedisDB(AbstractRemoteDB):
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
         """Return the client for an API key without requiring a full sync.
 
-        API-key lookup is on the admission path in hivemind-core, so unknown
-        keys must fail through indexed lookups only. ``sync()`` remains the
-        explicit repair path for interrupted/manual writes that leave secondary
-        indexes stale.
+        API-key lookup is on the admission path in hivemind-core. Kubernetes
+        operators maintain secondary indexes even for legacy Redis Cluster
+        namespaces, so prefer that bounded lookup before the compatibility
+        scan required by older/manual writers.
         """
         if api_key is None:
             return None
         api_key = str(api_key)
 
-        if self._legacy_cluster_mode():
-            matches = self._search_brute_force("api_key", api_key)
-            return matches[0] if matches else None
-
         for client in self._search_with_index("api_key", api_key):
             if client.api_key == api_key:
                 return client
+
+        if self._legacy_cluster_mode():
+            matches = self._search_brute_force("api_key", api_key)
+            return matches[0] if matches else None
 
         if self.redisearch_available:
             for client in self._search_with_redisearch("api_key", api_key):
