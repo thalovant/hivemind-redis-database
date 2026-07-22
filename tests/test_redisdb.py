@@ -434,7 +434,21 @@ class RedisDBTests(unittest.TestCase):
         self.assertEqual(redis_client.smembers("client:api_key:alpha-key"), set())
         self.assertNotIn("client:idx:1", redis_client.hashes)
         self.assertEqual(len(db), 1)
+        self.assertEqual(db.get_client_by_api_key("alpha-key").client_id, 1)
         self.assertEqual([c.name for c in db.search_by_value("name", "alpha")], ["alpha"])
+
+    def test_legacy_cluster_api_key_uses_operator_index_before_scan(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client, is_cluster=True, cluster_hash_tag=None)
+        client = Client(client_id=1, api_key="alpha-key", name="alpha")
+        redis_client.set("client:client:1", client.serialize())
+        redis_client.sadd("client:api_key:alpha-key", "1")
+
+        found = db.get_client_by_api_key("alpha-key")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.client_id, 1)
+        self.assertEqual(redis_client.scan_count, 0)
 
     def test_client_metadata_survives_add_and_search(self):
         redis_client = FakeRedis()
