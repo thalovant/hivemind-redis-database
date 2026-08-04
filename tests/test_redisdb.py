@@ -83,10 +83,25 @@ class FakeRedis:
         members = self.storage.get(key, set())
         return set(members) if isinstance(members, set) else set()
 
-    def hset(self, key, mapping):
+    def hset(self, key, name=None, value=None, mapping=None):
         values = self.hashes.setdefault(key, {})
-        values.update(mapping)
+        if mapping is not None:
+            values.update(mapping)
+        elif name is not None:
+            values[str(name)] = value
         return 1
+
+    def hget(self, key, name):
+        return self.hashes.get(key, {}).get(str(name))
+
+    def hdel(self, key, *names):
+        values = self.hashes.get(key, {})
+        removed = 0
+        for name in names:
+            if str(name) in values:
+                del values[str(name)]
+                removed += 1
+        return removed
 
     def scan_iter(self, pattern, count=None):
         self.scan_count += 1
@@ -138,6 +153,10 @@ class FakePipeline:
 
     def hset(self, *args, **kwargs):
         self.commands.append(("hset", args, kwargs))
+        return self
+
+    def hdel(self, *args, **kwargs):
+        self.commands.append(("hdel", args, kwargs))
         return self
 
     def delete(self, *args, **kwargs):
@@ -215,6 +234,7 @@ class RedisDBTests(unittest.TestCase):
         self.assertEqual(db.host, "127.0.0.1")
         self.assertEqual(db.port, 6379)
         self.assertEqual(db.subfolder, "hivemind-core")
+        self.assertEqual(db.max_connections, 64)
 
     def test_ssl_alias_is_accepted(self):
         fake_redis = FakeRedis()
@@ -467,18 +487,38 @@ class RedisDBTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].metadata, {"owner_id": "owner-123"})
 
-    def test_get_client_by_api_key_uses_secondary_index(self):
+    def test_get_client_by_api_key_uses_one_round_trip_materialized_record(self):
         redis_client = FakeRedis()
         db = self.build_db(redis_client)
 
         client = Client(client_id=1, api_key="alpha-key", name="alpha")
         self.assertTrue(db.add_item(client))
 
-        found = db.get_client_by_api_key("alpha-key")
+        found, timings = db.get_client_by_api_key_with_metrics("alpha-key")
 
         self.assertIsNotNone(found)
         self.assertEqual(found.client_id, 1)
-        self.assertEqual(redis_client.mget_calls[-1], ["client:client:1"])
+        self.assertEqual(redis_client.mget_calls, [])
+        self.assertEqual(timings["redis_round_trips"], 1)
+        self.assertGreaterEqual(timings["redis_command_ms"], 0)
+        self.assertGreaterEqual(timings["redis_deserialize_ms"], 0)
+
+    def test_materialized_api_key_record_is_invalidated_on_rotation_and_revoke(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client)
+        client = Client(client_id=1, api_key="alpha-key", name="alpha")
+        self.assertTrue(db.add_item(client))
+
+        client.api_key = "bravo-key"
+        self.assertTrue(db.update_client(client))
+
+        self.assertIsNone(db.get_client_by_api_key("alpha-key"))
+        self.assertEqual(
+            db.get_client_by_api_key("bravo-key").client_id,
+            client.client_id,
+        )
+        self.assertTrue(db.remove_client(str(client.client_id)))
+        self.assertIsNone(db.get_client_by_api_key("bravo-key"))
 
     def test_get_client_by_api_key_does_not_scan_on_index_miss(self):
         redis_client = FakeRedis()

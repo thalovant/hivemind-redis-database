@@ -157,7 +157,7 @@ there. This backend accepts it, but does not use it for Redis namespacing.
 | `index_prefix` | Actual Redis namespace prefix used by this backend | Default: `"client"` |
 | `cluster_nodes` | Explicit Redis Cluster startup nodes | Accepts the documented `[{\"host\": ..., \"port\": ...}]` shape |
 | `cluster_hash_tag` | Fixed hash tag for one-slot transactional writes in cluster mode | Recommended for new cluster deployments |
-| `max_connections` | Redis connection pool size | Default: `5` |
+| `max_connections` | Redis connection pool size | Default: `64` |
 | `retry_attempts` | Internal retry attempts for transient operations | Default: `3` |
 | `retry_delay` | Delay between retry attempts | Default: `0.1` seconds |
 | `use_ssl` | Enable TLS | Default: `false` |
@@ -178,10 +178,14 @@ there. This backend accepts it, but does not use it for Redis namespacing.
   for correctness.
 - Search remains exact-match. RediSearch is used as an accelerator, not as fuzzy
   search.
+- Steady-state API-key admission uses one `HGET` against a materialized
+  API-key-to-record hash. Create, rotation, revocation, migration, and `sync()`
+  maintain or explicitly invalidate that hash.
 - Revoked clients are excluded from iteration and search results so HiveMind
   admin flows only see active clients.
-- `sync()` repairs drift by rebuilding counters, Redis set indexes, and
-  RediSearch hash documents from stored client records.
+- `sync()` repairs drift by rebuilding counters, Redis set indexes, the
+  materialized API-key records, and RediSearch hash documents from stored
+  client records.
 
 ## Python Usage
 

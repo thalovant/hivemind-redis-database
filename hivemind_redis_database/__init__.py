@@ -222,6 +222,10 @@ class RedisDB(AbstractRemoteDB):
     def _api_key_index_key(self, api_key: str) -> str:
         return self._key("api_key", api_key)
 
+    def _api_key_record_key(self) -> str:
+        """Return the materialized API-key-to-client-record hash key."""
+        return self._key("api_key_records")
+
     def _search_doc_key(self, client_id: Union[str, int]) -> str:
         return self._key("idx", client_id)
 
@@ -596,7 +600,13 @@ class RedisDB(AbstractRemoteDB):
             if changed:
                 record["metadata"] = metadata
                 try:
-                    writer.set(key, json.dumps(record))
+                    serialized = json.dumps(record)
+                    writer.set(key, serialized)
+                    api_key = record.get("api_key")
+                    if api_key and api_key != "revoked":
+                        writer.hset(
+                            self._api_key_record_key(), api_key, serialized
+                        )
                 except Exception as e:
                     LOG.error("RedisDB migrate v2: failed to rewrite %s: %s",
                               key, e)
@@ -664,6 +674,11 @@ class RedisDB(AbstractRemoteDB):
 
             if self._legacy_cluster_mode():
                 self.redis.set(item_key, serialized_client)
+                self.redis.hset(
+                    self._api_key_record_key(),
+                    client.api_key,
+                    serialized_client,
+                )
                 LOG.debug(f"Successfully added client '{client.client_id}' in legacy cluster mode")
                 return True
 
@@ -672,6 +687,11 @@ class RedisDB(AbstractRemoteDB):
             p.set(item_key, serialized_client)
             p.sadd(self._name_index_key(client.name), str(client.client_id))
             p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
+            p.hset(
+                self._api_key_record_key(),
+                client.api_key,
+                serialized_client,
+            )
             # Feed RediSearch doc
             p.hset(self._search_doc_key(client.client_id), mapping={
                 "name": client.name,
@@ -733,6 +753,7 @@ class RedisDB(AbstractRemoteDB):
 
             if self._legacy_cluster_mode():
                 self.redis.set(item_key, json.dumps(data))
+                self.redis.hdel(self._api_key_record_key(), old_api_key)
                 LOG.info(f"Successfully revoked client '{client_id}' in legacy cluster mode")
                 return True
 
@@ -743,6 +764,7 @@ class RedisDB(AbstractRemoteDB):
             p.srem(self._name_index_key(old_name), client_id)
             p.srem(self._api_key_index_key(old_api_key), client_id)
             p.sadd(self._api_key_index_key("revoked"), client_id)
+            p.hdel(self._api_key_record_key(), old_api_key)
             # Update RediSearch doc
             p.hset(self._search_doc_key(client_id), mapping={
                 "name": "",
@@ -811,12 +833,22 @@ class RedisDB(AbstractRemoteDB):
             self._ensure_client_attributes(client)
 
             if self._legacy_cluster_mode():
-                self.redis.set(item_key, client.serialize())
+                serialized_client = client.serialize()
+                self.redis.set(item_key, serialized_client)
+                self.redis.hdel(
+                    self._api_key_record_key(), old_client.api_key
+                )
+                self.redis.hset(
+                    self._api_key_record_key(),
+                    client.api_key,
+                    serialized_client,
+                )
                 LOG.debug(f"Successfully updated client '{client.client_id}' in legacy cluster mode")
                 return True
 
             p = self._pipeline()
-            p.set(item_key, client.serialize())
+            serialized_client = client.serialize()
+            p.set(item_key, serialized_client)
             
             # Update indices only if values changed
             if old_client.name != client.name:
@@ -825,6 +857,12 @@ class RedisDB(AbstractRemoteDB):
             if old_client.api_key != client.api_key:
                 p.srem(self._api_key_index_key(old_client.api_key), str(client.client_id))
                 p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
+                p.hdel(self._api_key_record_key(), old_client.api_key)
+            p.hset(
+                self._api_key_record_key(),
+                client.api_key,
+                serialized_client,
+            )
             # Update RediSearch doc
             p.hset(self._search_doc_key(client.client_id), mapping={
                 "name": client.name,
@@ -844,7 +882,7 @@ class RedisDB(AbstractRemoteDB):
             client = self.get_client_by_api_key(api_key)
             if client is None:
                 return False
-            return bool(
+            updated = bool(
                 self.redis.eval(
                     _ADVANCE_LAST_SEEN_LUA,
                     1,
@@ -854,6 +892,13 @@ class RedisDB(AbstractRemoteDB):
                     CREATE_MARKER,
                 )
             )
+            if updated:
+                # The Lua script updates the authoritative primary record.
+                # Invalidate its derived admission record so the next lookup
+                # repairs it from that new value instead of returning stale
+                # session metadata.
+                self.redis.hdel(self._api_key_record_key(), api_key)
+            return updated
         except Exception as e:
             LOG.error(f"Failed to update last_seen for client '{api_key}': {e}")
             return False
@@ -957,32 +1002,115 @@ class RedisDB(AbstractRemoteDB):
                     res.append(client)
         return res
 
+    def get_client_by_api_key_with_metrics(
+            self, api_key: str) -> tuple[Optional[Client], dict[str, float]]:
+        """Return an API-key match and exact Redis/deserialization timings.
+
+        The materialized hash turns the admission hot path into one ``HGET``.
+        Existing namespaces are repaired lazily from the authoritative
+        secondary index; all create, update, revoke, and sync paths explicitly
+        maintain or invalidate the hash.
+        """
+        timings = {
+            "redis_command_ms": 0.0,
+            "redis_deserialize_ms": 0.0,
+            "redis_round_trips": 0.0,
+        }
+        if api_key is None:
+            return None, timings
+        api_key = str(api_key)
+
+        command_started = time.monotonic()
+        raw = self.redis.hget(self._api_key_record_key(), api_key)
+        timings["redis_command_ms"] += (
+            time.monotonic() - command_started
+        ) * 1000
+        timings["redis_round_trips"] += 1
+        if raw:
+            deserialize_started = time.monotonic()
+            try:
+                client = self._deserialize_client(raw)
+                self._ensure_client_attributes(client)
+            except Exception as error:
+                LOG.warning(
+                    "Failed to deserialize materialized API-key record: %s",
+                    error,
+                )
+                client = None
+            timings["redis_deserialize_ms"] += (
+                time.monotonic() - deserialize_started
+            ) * 1000
+            if client is not None and client.api_key == api_key:
+                return client, timings
+            command_started = time.monotonic()
+            self.redis.hdel(self._api_key_record_key(), api_key)
+            timings["redis_command_ms"] += (
+                time.monotonic() - command_started
+            ) * 1000
+            timings["redis_round_trips"] += 1
+
+        # Operators can maintain this index in legacy Redis Cluster mode too.
+        # Preserve that bounded compatibility path before the authoritative
+        # scan needed for namespaces written by old/manual clients.
+        command_started = time.monotonic()
+        client_ids = self.redis.smembers(self._api_key_index_key(api_key))
+        raws = self._get_many([
+            self._client_key(client_id) for client_id in client_ids
+        ])
+        timings["redis_command_ms"] += (
+            time.monotonic() - command_started
+        ) * 1000
+        timings["redis_round_trips"] += 2 if client_ids else 1
+        client = None
+        deserialize_started = time.monotonic()
+        for candidate_raw in raws:
+            if not candidate_raw or candidate_raw == CREATE_MARKER:
+                continue
+            try:
+                candidate = self._deserialize_client(candidate_raw)
+                self._ensure_client_attributes(candidate)
+            except Exception as error:
+                LOG.warning(
+                    "Failed to deserialize indexed API-key record: %s",
+                    error,
+                )
+                continue
+            if candidate.api_key == api_key:
+                client = candidate
+                break
+        timings["redis_deserialize_ms"] += (
+            time.monotonic() - deserialize_started
+        ) * 1000
+
+        if client is None and self._legacy_cluster_mode():
+            command_started = time.monotonic()
+            matches = self._search_brute_force("api_key", api_key)
+            timings["redis_command_ms"] += (
+                time.monotonic() - command_started
+            ) * 1000
+            client = matches[0] if matches else None
+
+        if client is not None:
+            command_started = time.monotonic()
+            self.redis.hset(
+                self._api_key_record_key(), api_key, client.serialize()
+            )
+            timings["redis_command_ms"] += (
+                time.monotonic() - command_started
+            ) * 1000
+            timings["redis_round_trips"] += 1
+        return client, timings
+
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
         """Return the client for an API key without requiring a full sync.
 
-        API-key lookup is on the admission path in hivemind-core. Kubernetes
-        operators maintain secondary indexes even for legacy Redis Cluster
-        namespaces, so prefer that bounded lookup before the compatibility
-        scan required by older/manual writers.
+        API-key lookup is on the admission path in hivemind-core, so unknown
+        keys must fail through indexed lookups only. ``sync()`` remains the
+        explicit repair path for interrupted/manual writes that leave secondary
+        indexes stale.
         """
-        if api_key is None:
-            return None
-        api_key = str(api_key)
-
-        for client in self._search_with_index("api_key", api_key):
-            if client.api_key == api_key:
-                return client
-
-        if self._legacy_cluster_mode():
-            matches = self._search_brute_force("api_key", api_key)
-            return matches[0] if matches else None
-
-        if self.redisearch_available:
-            for client in self._search_with_redisearch("api_key", api_key):
-                if client.api_key == api_key:
-                    return client
-
-        return None
+        client, _timings = self.get_client_by_api_key_with_metrics(api_key)
+        return client
 
     def search_by_value(self, key: str, val) -> List[Client]:
         """
@@ -1050,6 +1178,7 @@ class RedisDB(AbstractRemoteDB):
             p = self._pipeline()
             for key in index_keys:
                 p.delete(key)
+            p.delete(self._api_key_record_key())
 
             p.set(self._counter_key(), len(client_records))
             p.set(self._id_sequence_key(), max_client_id)
@@ -1059,6 +1188,12 @@ class RedisDB(AbstractRemoteDB):
                     if client.api_key != "revoked" and client.name:
                         p.sadd(self._name_index_key(client.name), str(client.client_id))
                     p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
+                    if client.api_key != "revoked":
+                        p.hset(
+                            self._api_key_record_key(),
+                            client.api_key,
+                            client.serialize(),
+                        )
                     p.hset(self._search_doc_key(client.client_id), mapping={
                         "name": client.name,
                         "api_key": client.api_key,

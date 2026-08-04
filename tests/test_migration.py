@@ -67,9 +67,12 @@ class FakeRedis:
         members = self.storage.get(key, set())
         return set(members) if isinstance(members, set) else set()
 
-    def hset(self, key, mapping):
+    def hset(self, key, field=None, value=None, mapping=None):
         values = self.hashes.setdefault(key, {})
-        values.update(mapping)
+        if mapping is not None:
+            values.update(mapping)
+        elif field is not None:
+            values[field] = value
         return 1
 
     def scan_iter(self, pattern, count=None):
