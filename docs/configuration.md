@@ -13,9 +13,9 @@ All settings are passed in the `hivemind-redis-db-plugin` block of
 | `username` | `"default"` | Redis ACL username. |
 | `password` | — | Redis password. |
 | `index_prefix` | `"client"` | Key namespace prefix used inside Redis. |
-| `cluster_nodes` | — | List of `{"host": ..., "port": ...}` dicts for Redis Cluster startup. Presence triggers cluster mode. |
-| `cluster_hash_tag` | — | Fixed hash tag for one-slot transactional writes. Recommended for new cluster deployments. |
-| `max_connections` | `5` | Redis connection pool size. |
+| `cluster_nodes` | none | List of `{"host": ..., "port": ...}` dicts for Redis Cluster startup. Presence triggers cluster mode. |
+| `cluster_hash_tag` | none | Fixed hash tag for one-slot transactional writes. Recommended for new cluster deployments. |
+| `max_connections` | `64` | Redis connection pool size. Admission uses a Redis round trip, so keep this at least as large as the authorization worker count. |
 | `retry_attempts` | `3` | Internal retry count for transient operations. |
 | `retry_delay` | `0.1` | Seconds between retry attempts. |
 | `use_ssl` | `false` | Enable TLS. |

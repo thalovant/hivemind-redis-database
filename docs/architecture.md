@@ -25,6 +25,7 @@ Each client record is stored as a set of keys under a configurable prefix
 | `<prefix>:client:<id>` | Hash | Full client record (all fields). |
 | `<prefix>:name:<name>` | String | `client_id` of the matching record. |
 | `<prefix>:api_key:<api_key>` | String | `client_id` of the matching record. |
+| `<prefix>:api_key_records` | Hash | Materialized `api_key` to serialized client record used by admission. |
 | `<prefix>:idx:<id>` | String | `"1"` (membership sentinel). |
 | `<prefix>:count` | String | Integer count of non-revoked clients. |
 | `<prefix>:id_seq` | String | Monotone ID sequence counter. |
@@ -59,10 +60,10 @@ not for full-text or fuzzy queries.
 
 ## sync()
 
-`sync()` rebuilds the derived keys (counters, set indexes, RediSearch hash
-documents) from the authoritative `<prefix>:client:<id>` hash records. It is
-a recovery tool, not a transaction boundary — use it after interrupted writes
-or manual Redis changes.
+`sync()` rebuilds the derived keys (counters, set indexes, materialized API-key
+records, and RediSearch hash documents) from the authoritative
+`<prefix>:client:<id>` records. It is a recovery tool, not a transaction
+boundary — use it after interrupted writes or manual Redis changes.
 
 ## Schema migration
 
