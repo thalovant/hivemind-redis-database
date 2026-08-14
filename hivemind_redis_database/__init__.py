@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Iterable, Union
 import json
+import threading
 import time
 
 import redis
@@ -101,6 +102,15 @@ class RedisDB(AbstractRemoteDB):
     ssl_ca_certs: Optional[str] = None
     ssl_cert_reqs: str = "required"
     ssl_check_hostname: bool = True
+    # Opt-in in-process TTL cache for the API-key admission lookup. Under a
+    # 400-client reconnect storm the single materialized-hash HGET measured
+    # ~60ms against a busy shared Redis; identity records change only through
+    # explicit operator actions. SECURITY TRADE-OFF: a revoke/update becomes
+    # effective on OTHER hub processes only after the TTL expires (this
+    # process invalidates immediately) -- keep the TTL small (seconds).
+    # 0 disables the cache (default).
+    api_key_cache_ttl: float = 0.0
+    api_key_cache_size: int = 2048
 
 
     def __post_init__(self):
@@ -109,6 +119,8 @@ class RedisDB(AbstractRemoteDB):
         """
         self._normalize_parameters()
         self._validate_parameters()
+        self._api_key_cache: dict = {}
+        self._api_key_cache_lock = threading.Lock()
         LOG.info("Redis database initialized with hiredis for optimal performance")
 
         self.is_cluster = self._detect_cluster()
@@ -221,6 +233,43 @@ class RedisDB(AbstractRemoteDB):
 
     def _api_key_index_key(self, api_key: str) -> str:
         return self._key("api_key", api_key)
+
+    def _api_key_cache_get(self, api_key: str):
+        """Return (hit, client) from the TTL cache; (False, None) on miss."""
+        if self.api_key_cache_ttl <= 0:
+            return False, None
+        with self._api_key_cache_lock:
+            entry = self._api_key_cache.get(api_key)
+            if entry is None:
+                return False, None
+            ts, client = entry
+            if time.monotonic() - ts >= self.api_key_cache_ttl:
+                self._api_key_cache.pop(api_key, None)
+                return False, None
+            return True, client
+
+    def _api_key_cache_store(self, api_key: str, client) -> None:
+        if self.api_key_cache_ttl <= 0:
+            return
+        with self._api_key_cache_lock:
+            if len(self._api_key_cache) >= max(16, int(self.api_key_cache_size)):
+                self._api_key_cache.clear()
+            self._api_key_cache[api_key] = (time.monotonic(), client)
+
+    def _api_key_cache_invalidate(self, api_key=None) -> None:
+        """Drop one key (or everything) from the TTL cache.
+
+        Called from every path that maintains the materialized API-key hash,
+        so THIS process reflects mutations immediately; other processes see
+        them within the TTL.
+        """
+        if self.api_key_cache_ttl <= 0:
+            return
+        with self._api_key_cache_lock:
+            if api_key is None:
+                self._api_key_cache.clear()
+            else:
+                self._api_key_cache.pop(str(api_key), None)
 
     def _api_key_record_key(self) -> str:
         """Return the materialized API-key-to-client-record hash key."""
@@ -607,6 +656,7 @@ class RedisDB(AbstractRemoteDB):
                         writer.hset(
                             self._api_key_record_key(), api_key, serialized
                         )
+                        self._api_key_cache_invalidate(api_key)
                 except Exception as e:
                     LOG.error("RedisDB migrate v2: failed to rewrite %s: %s",
                               key, e)
@@ -679,6 +729,7 @@ class RedisDB(AbstractRemoteDB):
                     client.api_key,
                     serialized_client,
                 )
+                self._api_key_cache_invalidate(client.api_key)
                 LOG.debug(f"Successfully added client '{client.client_id}' in legacy cluster mode")
                 return True
 
@@ -754,6 +805,7 @@ class RedisDB(AbstractRemoteDB):
             if self._legacy_cluster_mode():
                 self.redis.set(item_key, json.dumps(data))
                 self.redis.hdel(self._api_key_record_key(), old_api_key)
+                self._api_key_cache_invalidate(old_api_key)
                 LOG.info(f"Successfully revoked client '{client_id}' in legacy cluster mode")
                 return True
 
@@ -765,6 +817,7 @@ class RedisDB(AbstractRemoteDB):
             p.srem(self._api_key_index_key(old_api_key), client_id)
             p.sadd(self._api_key_index_key("revoked"), client_id)
             p.hdel(self._api_key_record_key(), old_api_key)
+            self._api_key_cache_invalidate(old_api_key)
             # Update RediSearch doc
             p.hset(self._search_doc_key(client_id), mapping={
                 "name": "",
@@ -843,6 +896,8 @@ class RedisDB(AbstractRemoteDB):
                     client.api_key,
                     serialized_client,
                 )
+                self._api_key_cache_invalidate(old_client.api_key)
+                self._api_key_cache_invalidate(client.api_key)
                 LOG.debug(f"Successfully updated client '{client.client_id}' in legacy cluster mode")
                 return True
 
@@ -858,6 +913,8 @@ class RedisDB(AbstractRemoteDB):
                 p.srem(self._api_key_index_key(old_client.api_key), str(client.client_id))
                 p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
                 p.hdel(self._api_key_record_key(), old_client.api_key)
+                self._api_key_cache_invalidate(old_client.api_key)
+                self._api_key_cache_invalidate(client.api_key)
             p.hset(
                 self._api_key_record_key(),
                 client.api_key,
@@ -898,6 +955,7 @@ class RedisDB(AbstractRemoteDB):
                 # repairs it from that new value instead of returning stale
                 # session metadata.
                 self.redis.hdel(self._api_key_record_key(), api_key)
+                self._api_key_cache_invalidate(api_key)
             return updated
         except Exception as e:
             LOG.error(f"Failed to update last_seen for client '{api_key}': {e}")
@@ -1020,6 +1078,11 @@ class RedisDB(AbstractRemoteDB):
             return None, timings
         api_key = str(api_key)
 
+        hit, cached = self._api_key_cache_get(api_key)
+        if hit:
+            timings["cache_hit"] = 1.0
+            return cached, timings
+
         command_started = time.monotonic()
         raw = self.redis.hget(self._api_key_record_key(), api_key)
         timings["redis_command_ms"] += (
@@ -1041,9 +1104,11 @@ class RedisDB(AbstractRemoteDB):
                 time.monotonic() - deserialize_started
             ) * 1000
             if client is not None and client.api_key == api_key:
+                self._api_key_cache_store(api_key, client)
                 return client, timings
             command_started = time.monotonic()
             self.redis.hdel(self._api_key_record_key(), api_key)
+            self._api_key_cache_invalidate(api_key)
             timings["redis_command_ms"] += (
                 time.monotonic() - command_started
             ) * 1000
@@ -1099,6 +1164,7 @@ class RedisDB(AbstractRemoteDB):
                 time.monotonic() - command_started
             ) * 1000
             timings["redis_round_trips"] += 1
+        self._api_key_cache_store(api_key, client)
         return client, timings
 
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
@@ -1179,6 +1245,7 @@ class RedisDB(AbstractRemoteDB):
             for key in index_keys:
                 p.delete(key)
             p.delete(self._api_key_record_key())
+            self._api_key_cache_invalidate()
 
             p.set(self._counter_key(), len(client_records))
             p.set(self._id_sequence_key(), max_client_id)
