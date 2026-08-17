@@ -121,6 +121,11 @@ class RedisDB(AbstractRemoteDB):
         self._validate_parameters()
         self._api_key_cache: dict = {}
         self._api_key_cache_lock = threading.Lock()
+        # Bumped by every invalidation. A lookup snapshots the generation
+        # BEFORE reading Redis and the store is dropped if it changed, so an
+        # in-flight read that overlapped a mutation can never re-cache the
+        # pre-mutation value.
+        self._api_key_cache_gen = 0
         LOG.info("Redis database initialized with hiredis for optimal performance")
 
         self.is_cluster = self._detect_cluster()
@@ -212,6 +217,16 @@ class RedisDB(AbstractRemoteDB):
             if "{" in self.cluster_hash_tag or "}" in self.cluster_hash_tag:
                 raise ValueError("cluster_hash_tag cannot contain '{' or '}'")
 
+        if not isinstance(self.api_key_cache_ttl, (int, float)) or self.api_key_cache_ttl < 0:
+            raise ValueError(
+                f"api_key_cache_ttl must be a non-negative number, got {self.api_key_cache_ttl}"
+            )
+
+        if not isinstance(self.api_key_cache_size, int) or self.api_key_cache_size < 1:
+            raise ValueError(
+                f"api_key_cache_size must be a positive integer, got {self.api_key_cache_size}"
+            )
+
         if self.ssl_cert_reqs not in ["required", "optional", "none"]:
             raise ValueError(f"ssl_cert_reqs must be 'required', 'optional', or 'none', got {self.ssl_cert_reqs}")
 
@@ -248,24 +263,43 @@ class RedisDB(AbstractRemoteDB):
                 return False, None
             return True, client
 
-    def _api_key_cache_store(self, api_key: str, client) -> None:
+    def _api_key_cache_gen_snapshot(self) -> int:
+        """Generation token to pass to ``_api_key_cache_store``.
+
+        Snapshot BEFORE reading Redis: if any invalidation lands between the
+        snapshot and the store, the store is dropped rather than re-caching a
+        value read before the mutation committed.
+        """
+        if self.api_key_cache_ttl <= 0:
+            return 0
+        with self._api_key_cache_lock:
+            return self._api_key_cache_gen
+
+    def _api_key_cache_store(self, api_key: str, client, gen: int) -> None:
         if self.api_key_cache_ttl <= 0:
             return
         with self._api_key_cache_lock:
-            if len(self._api_key_cache) >= max(16, int(self.api_key_cache_size)):
+            if gen != self._api_key_cache_gen:
+                return
+            if api_key not in self._api_key_cache and (
+                len(self._api_key_cache) >= self.api_key_cache_size
+            ):
                 self._api_key_cache.clear()
             self._api_key_cache[api_key] = (time.monotonic(), client)
 
     def _api_key_cache_invalidate(self, api_key=None) -> None:
         """Drop one key (or everything) from the TTL cache.
 
-        Called from every path that maintains the materialized API-key hash,
-        so THIS process reflects mutations immediately; other processes see
-        them within the TTL.
+        Called AFTER the Redis write commits on every path that maintains the
+        materialized API-key hash, so THIS process reflects mutations
+        immediately; other processes see them within the TTL. Also bumps the
+        cache generation so an in-flight lookup that read Redis before the
+        commit cannot store its stale result afterwards.
         """
         if self.api_key_cache_ttl <= 0:
             return
         with self._api_key_cache_lock:
+            self._api_key_cache_gen += 1
             if api_key is None:
                 self._api_key_cache.clear()
             else:
@@ -750,7 +784,10 @@ class RedisDB(AbstractRemoteDB):
             })
             p.incr(self._counter_key())
             p.execute()
-            
+            # After commit: evict a cached negative lookup for this key so a
+            # freshly added client is admitted immediately.
+            self._api_key_cache_invalidate(client.api_key)
+
             LOG.debug(f"Successfully added client '{client.client_id}'")
             return True
         except Exception as e:
@@ -817,7 +854,6 @@ class RedisDB(AbstractRemoteDB):
             p.srem(self._api_key_index_key(old_api_key), client_id)
             p.sadd(self._api_key_index_key("revoked"), client_id)
             p.hdel(self._api_key_record_key(), old_api_key)
-            self._api_key_cache_invalidate(old_api_key)
             # Update RediSearch doc
             p.hset(self._search_doc_key(client_id), mapping={
                 "name": "",
@@ -825,6 +861,9 @@ class RedisDB(AbstractRemoteDB):
             })
 
             p.execute()
+            # After commit, never before: invalidating pre-commit lets a
+            # concurrent lookup re-cache the still-unrevoked Redis value.
+            self._api_key_cache_invalidate(old_api_key)
 
             LOG.info(f"Successfully revoked client '{client_id}'")
             return True
@@ -913,8 +952,6 @@ class RedisDB(AbstractRemoteDB):
                 p.srem(self._api_key_index_key(old_client.api_key), str(client.client_id))
                 p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
                 p.hdel(self._api_key_record_key(), old_client.api_key)
-                self._api_key_cache_invalidate(old_client.api_key)
-                self._api_key_cache_invalidate(client.api_key)
             p.hset(
                 self._api_key_record_key(),
                 client.api_key,
@@ -925,8 +962,14 @@ class RedisDB(AbstractRemoteDB):
                 "name": client.name,
                 "api_key": client.api_key,
             })
-            
+
             p.execute()
+            # After commit, never before (a concurrent lookup could otherwise
+            # re-cache the pre-update value). The new key is invalidated even
+            # when unchanged: a same-key update still rewrites the record.
+            if old_client.api_key != client.api_key:
+                self._api_key_cache_invalidate(old_client.api_key)
+            self._api_key_cache_invalidate(client.api_key)
             LOG.debug(f"Successfully updated client '{client.client_id}'")
             return True
         except Exception as e:
@@ -1082,6 +1125,7 @@ class RedisDB(AbstractRemoteDB):
         if hit:
             timings["cache_hit"] = 1.0
             return cached, timings
+        cache_gen = self._api_key_cache_gen_snapshot()
 
         command_started = time.monotonic()
         raw = self.redis.hget(self._api_key_record_key(), api_key)
@@ -1104,7 +1148,7 @@ class RedisDB(AbstractRemoteDB):
                 time.monotonic() - deserialize_started
             ) * 1000
             if client is not None and client.api_key == api_key:
-                self._api_key_cache_store(api_key, client)
+                self._api_key_cache_store(api_key, client, cache_gen)
                 return client, timings
             command_started = time.monotonic()
             self.redis.hdel(self._api_key_record_key(), api_key)
@@ -1164,7 +1208,7 @@ class RedisDB(AbstractRemoteDB):
                 time.monotonic() - command_started
             ) * 1000
             timings["redis_round_trips"] += 1
-        self._api_key_cache_store(api_key, client)
+        self._api_key_cache_store(api_key, client, cache_gen)
         return client, timings
 
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
@@ -1245,7 +1289,6 @@ class RedisDB(AbstractRemoteDB):
             for key in index_keys:
                 p.delete(key)
             p.delete(self._api_key_record_key())
-            self._api_key_cache_invalidate()
 
             p.set(self._counter_key(), len(client_records))
             p.set(self._id_sequence_key(), max_client_id)
@@ -1267,6 +1310,9 @@ class RedisDB(AbstractRemoteDB):
                     })
 
             p.execute()
+            # Full-rebuild committed: drop the whole cache after, not before,
+            # so no lookup can re-cache pre-rebuild state mid-sync.
+            self._api_key_cache_invalidate()
             LOG.info(f"Redis database sync complete for '{self.index_prefix}' ({len(client_records)} clients)")
             return True
         except Exception as e:
