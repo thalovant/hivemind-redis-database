@@ -10,6 +10,9 @@ import redis
 from ovos_utils.log import LOG
 from redis.cluster import ClusterNode
 
+from hivemind_plugin_manager.database import (AbstractDB, AbstractRemoteDB,
+                                              Client, cast2client)
+
 try:  # optional C-accelerated JSON for the admission-lookup miss path
     import orjson
 
@@ -26,8 +29,6 @@ _KEEPALIVE_OPTIONS = {
     if hasattr(socket, opt)
 }
 
-from hivemind_plugin_manager.database import (Client, AbstractDB,
-                                                AbstractRemoteDB, cast2client)
 
 
 CREATE_MARKER = "__hivemind_creating__"
