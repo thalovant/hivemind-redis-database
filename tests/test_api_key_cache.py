@@ -18,7 +18,8 @@ def _db(ttl=10.0):
     import threading
     from hivemind_redis_database import RedisDB
     with patch.object(RedisDB, "__post_init__", lambda self: None):
-        db = RedisDB(api_key_cache_ttl=ttl)
+        kwargs = {} if ttl is None else {"api_key_cache_ttl": ttl}
+        db = RedisDB(**kwargs)
     # replicate the cache state __post_init__ would create
     db._api_key_cache = {}
     db._api_key_cache_lock = threading.Lock()
@@ -56,7 +57,16 @@ def _mutation_harness(db):
 
 
 class TestApiKeyCache(unittest.TestCase):
-    def test_disabled_by_default_ttl_zero(self):
+    def test_disabled_by_default(self):
+        """The dataclass default itself must be off -- constructed without an
+        explicit ttl, nothing may be cached."""
+        db = _db(ttl=None)
+        self.assertEqual(db.api_key_cache_ttl, 0.0)
+        _store(db, "k", "client")
+        hit, _ = db._api_key_cache_get("k")
+        self.assertFalse(hit)
+
+    def test_disabled_with_explicit_zero(self):
         db = _db(ttl=0)
         _store(db, "k", "client")
         hit, _ = db._api_key_cache_get("k")
@@ -155,7 +165,10 @@ class TestApiKeyCache(unittest.TestCase):
         client, timings = db.get_client_by_api_key_with_metrics("key1")
         self.assertEqual(client, "cached-client")
         self.assertEqual(timings.get("cache_hit"), 1.0)
-        db.redis.hget.assert_not_called()
+        # A hit must issue NO Redis operation at all. (mock_calls, not
+        # assert_not_called(): the latter only covers calls to the mock
+        # itself, not method calls like db.redis.hget(...).)
+        self.assertEqual(db.redis.mock_calls, [])
 
 
 class TestMutationInvalidation(unittest.TestCase):
