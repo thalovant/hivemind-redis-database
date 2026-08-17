@@ -10,6 +10,22 @@ import redis
 from redis.cluster import ClusterNode
 from ovos_utils.log import LOG
 
+try:  # optional C-accelerated JSON for the admission-lookup miss path
+    import orjson
+
+    def _json_loads(data):
+        return orjson.loads(data)
+except ImportError:  # pragma: no cover - depends on environment
+    _json_loads = json.loads
+
+# Kernel-side dead-peer detection on pooled connections (Linux constants;
+# other platforms silently fall back to plain SO_KEEPALIVE).
+_KEEPALIVE_OPTIONS = {
+    getattr(socket, opt): val
+    for opt, val in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3))
+    if hasattr(socket, opt)
+}
+
 from hivemind_plugin_manager.database import (Client, AbstractDB,
                                                 AbstractRemoteDB, cast2client)
 
@@ -478,7 +494,15 @@ class RedisDB(AbstractRemoteDB):
             'decode_responses': True,
             'socket_connect_timeout': 5,
             'socket_timeout': 5,
-            'health_check_interval': 30,
+            # No idle health checks: a non-zero interval makes redis-py send a
+            # blocking PING before the first command on any connection idle
+            # longer than the interval -- +1 serial RTT at the front of every
+            # admission burst, exactly the traffic shape a hub sees. Dead
+            # connections are handled reactively by the retry policy below and
+            # proactively by kernel TCP keepalive.
+            'health_check_interval': 0,
+            'socket_keepalive': True,
+            'socket_keepalive_options': _KEEPALIVE_OPTIONS,
             'max_connections': self.max_connections,
         }
         connection_kwargs.update(self._get_ssl_kwargs())
@@ -506,6 +530,8 @@ class RedisDB(AbstractRemoteDB):
             "decode_responses": True,
             "socket_connect_timeout": 5,
             "socket_timeout": 5,
+            "socket_keepalive": True,
+            "socket_keepalive_options": _KEEPALIVE_OPTIONS,
             "max_connections": self.max_connections,
             "skip_full_coverage_check": True,
             "cluster_error_retry_attempts": self.retry_attempts,
@@ -908,7 +934,7 @@ class RedisDB(AbstractRemoteDB):
         here so a single bad row doesn't break iteration over the DB.
         """
         if isinstance(client_data, str):
-            client_data = json.loads(client_data)
+            client_data = _json_loads(client_data)
         if isinstance(client_data, dict) and "metadata" in client_data \
                 and not isinstance(client_data["metadata"], dict):
             client_data = dict(client_data)
