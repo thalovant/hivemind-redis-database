@@ -56,6 +56,18 @@ class TestConnectionTuning(unittest.TestCase):
         self.assertEqual(client.api_key, "k")
         self.assertEqual(client.metadata["unicode"], "café")
 
+    def test_deserialize_nonfinite_floats_stay_readable(self):
+        """stdlib json emits NaN/Infinity by default and orjson strictly
+        rejects them -- records written by stdlib must stay readable
+        whichever backend is active."""
+        db = _db()
+        client = db._deserialize_client(
+            '{"client_id": 3, "api_key": "k", "name": "n", '
+            '"metadata": {"score": NaN, "bound": Infinity}}'
+        )
+        self.assertEqual(client.client_id, 3)
+        self.assertNotEqual(client.metadata["score"], client.metadata["score"])
+
     def test_deserialize_coerces_bad_metadata(self):
         db = _db()
         client = db._deserialize_client(

@@ -17,7 +17,13 @@ try:  # optional C-accelerated JSON for the admission-lookup miss path
     import orjson
 
     def _json_loads(data):
-        return orjson.loads(data)
+        try:
+            return orjson.loads(data)
+        except orjson.JSONDecodeError:
+            # stdlib json emits and accepts non-finite floats (NaN/Infinity)
+            # by default; orjson strictly rejects them. Records written by
+            # stdlib must stay readable when orjson is installed.
+            return json.loads(data)
 except ImportError:  # pragma: no cover - depends on environment
     _json_loads = json.loads
 
