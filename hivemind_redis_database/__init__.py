@@ -4,7 +4,8 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Union
+from collections.abc import Iterable
+from typing import Optional, Union
 
 import redis
 from ovos_utils.log import LOG
@@ -95,7 +96,7 @@ class RedisDB(AbstractRemoteDB):
         password (Optional[str]): Redis authentication password
         username (Optional[str]): Redis authentication username (default: "default")
         db (Optional[int]): Redis database number for single instance
-        cluster_nodes (Optional[List[dict]]): Redis Cluster node configuration
+        cluster_nodes (Optional[list[dict]]): Redis Cluster node configuration
         cluster_hash_tag (Optional[str]): Fixed Redis Cluster hash tag for single-slot writes
         index_prefix (str): Key prefix for all database operations (default: "client")
         max_connections (int): Maximum connection pool size (default: 64)
@@ -114,7 +115,7 @@ class RedisDB(AbstractRemoteDB):
     password: Optional[str] = None
     username: Optional[str] = "default"
     db: Optional[int] = 0
-    cluster_nodes: Optional[List[dict]] = None
+    cluster_nodes: Optional[list[dict]] = None
     cluster_hash_tag: Optional[str] = None
     index_prefix: str = "client"
     max_connections: int = 64
@@ -416,7 +417,7 @@ class RedisDB(AbstractRemoteDB):
             ssl_kwargs["ssl_ca_certs"] = self.ssl_ca_certs
         return ssl_kwargs
 
-    def _get_startup_nodes(self) -> List[ClusterNode]:
+    def _get_startup_nodes(self) -> list[ClusterNode]:
         """Normalize startup nodes into redis-py ClusterNode objects."""
         raw_nodes = self.cluster_nodes or [{"host": self.host, "port": self.port}]
         startup_nodes = []
@@ -1079,7 +1080,7 @@ class RedisDB(AbstractRemoteDB):
         """
         return self.get_client_by_id(client_id)
 
-    def _search_with_redisearch(self, key: str, val: str) -> List[Client]:
+    def _search_with_redisearch(self, key: str, val: str) -> list[Client]:
         """
         Search using RediSearch if available.
 
@@ -1111,7 +1112,7 @@ class RedisDB(AbstractRemoteDB):
         except Exception:
             return []
 
-    def _search_with_index(self, key: str, val: str) -> List[Client]:
+    def _search_with_index(self, key: str, val: str) -> list[Client]:
         """
         Search using Redis sets for indexed fields.
 
@@ -1129,7 +1130,7 @@ class RedisDB(AbstractRemoteDB):
         LOG.debug(f"Found {len(res)} clients matching '{key}={val}'")
         return res
 
-    def _search_brute_force(self, key: str, val) -> List[Client]:
+    def _search_brute_force(self, key: str, val) -> list[Client]:
         """
         Fallback search by scanning all clients.
 
@@ -1266,7 +1267,7 @@ class RedisDB(AbstractRemoteDB):
         client, _timings = self.get_client_by_api_key_with_metrics(api_key)
         return client
 
-    def search_by_value(self, key: str, val) -> List[Client]:
+    def search_by_value(self, key: str, val) -> list[Client]:
         """
         Search for clients by a specific key-value pair in Redis.
 
@@ -1372,7 +1373,7 @@ class RedisDB(AbstractRemoteDB):
                     count += 1
         return count
 
-    def _iter_key_batches(self, keys: Iterable[str], batch_size: int = 100) -> Iterable[List[str]]:
+    def _iter_key_batches(self, keys: Iterable[str], batch_size: int = 100) -> Iterable[list[str]]:
         """Yield keys in fixed-size batches for pipelined reads."""
         batch = []
         for key in keys:
@@ -1383,7 +1384,7 @@ class RedisDB(AbstractRemoteDB):
         if batch:
             yield batch
 
-    def _get_many(self, keys: List[str]) -> List[Optional[str]]:
+    def _get_many(self, keys: list[str]) -> list[Optional[str]]:
         """Fetch multiple keys efficiently across single-node and cluster clients."""
         if not keys:
             return []
@@ -1399,7 +1400,7 @@ class RedisDB(AbstractRemoteDB):
             pipe.get(key)
         return pipe.execute()
 
-    def _load_clients(self, keys: List[str], *, include_revoked: bool = False) -> List[Client]:
+    def _load_clients(self, keys: list[str], *, include_revoked: bool = False) -> list[Client]:
         """Load and deserialize client records from Redis keys."""
         clients = []
         for key, client_data in zip(keys, self._get_many(keys)):
