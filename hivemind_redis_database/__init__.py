@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Iterable, Union
 import json
+import math
 import threading
 import time
 
@@ -217,12 +218,21 @@ class RedisDB(AbstractRemoteDB):
             if "{" in self.cluster_hash_tag or "}" in self.cluster_hash_tag:
                 raise ValueError("cluster_hash_tag cannot contain '{' or '}'")
 
-        if not isinstance(self.api_key_cache_ttl, (int, float)) or self.api_key_cache_ttl < 0:
+        ttl = self.api_key_cache_ttl
+        if (isinstance(ttl, bool)
+                or not isinstance(ttl, (int, float))
+                or not math.isfinite(ttl)
+                or ttl < 0):
+            # Non-finite values would enable the cache with entries that can
+            # never expire (the monotonic comparison cannot succeed against
+            # inf or nan), making the cross-process revocation lag unbounded.
             raise ValueError(
-                f"api_key_cache_ttl must be a non-negative number, got {self.api_key_cache_ttl}"
+                f"api_key_cache_ttl must be a finite non-negative number, got {ttl}"
             )
 
-        if not isinstance(self.api_key_cache_size, int) or self.api_key_cache_size < 1:
+        if (isinstance(self.api_key_cache_size, bool)
+                or not isinstance(self.api_key_cache_size, int)
+                or self.api_key_cache_size < 1):
             raise ValueError(
                 f"api_key_cache_size must be a positive integer, got {self.api_key_cache_size}"
             )

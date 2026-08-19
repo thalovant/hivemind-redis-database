@@ -139,7 +139,12 @@ class TestApiKeyCache(unittest.TestCase):
         with self.assertRaises(ValueError):
             db._validate_parameters()
         db.api_key_cache_size = 2048
-        db.api_key_cache_ttl = -1
+        for bad_ttl in (-1, float("nan"), float("inf"), True):
+            db.api_key_cache_ttl = bad_ttl
+            with self.assertRaises(ValueError):
+                db._validate_parameters()
+        db.api_key_cache_ttl = 10
+        db.api_key_cache_size = True
         with self.assertRaises(ValueError):
             db._validate_parameters()
 
