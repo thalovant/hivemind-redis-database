@@ -41,6 +41,9 @@ hivemind-redis-db-plugin = "hivemind_redis_database:RedisDB"
 hivemind-redis-migrate-cluster = "hivemind_redis_database.migration:main"
 
 [project.optional-dependencies]
+fast = [
+    "orjson>=3.9",
+]
 test = [
     "pytest>=7.0",
     "fakeredis>=2.0",
