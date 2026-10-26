@@ -22,6 +22,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+    # Patched classic FileLock compatible with combo-lock's filelock~=3.0.
+    "filelock==3.20.3",
+    # The supported bus client still imports BitStream, removed in bitstring 5.
+    "bitstring>=4.1.1,<5",
     "redis>=4.2.0",
     "hiredis>=2.0.0",
     "hivemind-plugin-manager>=0.5.0,<1.0.0",
