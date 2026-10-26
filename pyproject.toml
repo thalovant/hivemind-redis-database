@@ -28,7 +28,8 @@ dependencies = [
     "bitstring>=4.1.1,<5",
     "redis>=4.2.0",
     "hiredis>=2.0.0",
-    "hivemind-plugin-manager>=0.5.0,<1.0.0",
+    # This legacy schema is validated against the pre-0.9 Client representation.
+    "hivemind-plugin-manager>=0.6.0a1,<0.9",
     "hivemind-bus-client>=0.4.4",
 ]
 dynamic = ["version"]
@@ -51,8 +52,11 @@ fast = [
 test = [
     "pytest>=7.0",
     "fakeredis>=2.0",
-    "hivescope>=0.5.2a1",
-    "hivemind-plugin-manager>=0.7.1a1",
+    # Match the existing policy-E2E stack and its legacy connection constructor.
+    "hivescope==0.4.0a2",
+    "hivemind-core==4.3.0a2",
+    "hivemind-ovos-agent-plugin==0.2.0a1",
+    "hivemind-plugin-manager==0.6.0a1",
 ]
 
 [tool.setuptools.packages.find]

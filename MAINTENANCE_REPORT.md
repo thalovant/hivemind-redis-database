@@ -4,9 +4,19 @@ Last Edit: Codex - 2026-10-25 - Motive: Record verified dependency security and 
 
 ## Dependency compatibility
 
-Actual install requirements constrain filelock to 3.20.3. Fresh installs also require bitstring>=4.1.1,<5 because the supported bus client imports BitStream. The existing plugin-manager range and CI pins are unchanged. With the coverage workflow's plugin-manager 0.6.0a1, the unit suite passes; the declared test extra selects newer Client behavior and retains one pre-existing metadata assertion failure. No API cap or runtime migration is included.
+Actual install requirements constrain filelock to 3.20.3. Fresh installs require bitstring>=4.1.1,<5 because the supported bus client
+imports BitStream. This legacy Client representation supports
+plugin-manager>=0.6.0a1,<0.9. Test extras match the existing policy-E2E stack:
+hivescope0.4.0a2, core4.3.0a2, agent0.2.0a1 and manager0.6.0a1.
+No Redis implementation or schema is changed. This fork is not compatible with
+modern quota's manager>=0.10 requirement and does not replace the maintained
+listener's Redis0.1.1a8.
 
-Verification: 90 passed, 6 skipped with the existing CI coverage plugin-manager 0.6.0a1 pin; normal declared test extras produce 89 passed, 6 skipped and 1 pre-existing Client metadata failure. The three dependency regressions pass. Wheel/sdist builds and exact built-metadata checks pass.
+Verification: full declared test extras pass 94 tests, including topology
+tests, with 6 existing local real-Redis skips. The supported manager0.8.0a3
+endpoint passes 91 unit tests with 6 skips before the final test-stack
+regression was added. No runtime migration or skipped failure is used.
+Wheel/sdist builds and exact built-metadata checks pass.
 See [tests/test_dependency_security.py](tests/test_dependency_security.py).
 No deployment, package publication, or vulnerability exception is performed.
 
