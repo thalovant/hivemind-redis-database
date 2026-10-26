@@ -13,8 +13,10 @@ The GitHub Advisory Database lists older affected ranges `<3.20.1`
 ([GHSA-w853-jp5j-5j7f](https://github.com/advisories/GHSA-w853-jp5j-5j7f)) and
 `<3.20.3` ([GHSA-qmgc-5h2g-mvrw](https://github.com/advisories/GHSA-qmgc-5h2g-mvrw)).
 The newer HIGH [GHSA-v4x8-3wr5-3wq8](https://github.com/advisories/GHSA-v4x8-3wr5-3wq8)
-affects `>=3.20.4,<=4.2.0`; the other five published ranges begin at 3.20.4,
-3.22.0, or 4.1.0. Exact 3.20.3 lies outside all eight ranges.
+affects `>=3.20.4,<=4.2.0`; other reviewed ranges begin at 3.20.4,
+3.22.0, or 4.1.0. [GHSA-2g95-wg33-c5x2](https://github.com/advisories/GHSA-2g95-wg33-c5x2)
+affects `>=4.1.0,<=4.2.0`. Exact3.20.3 is outside these reviewed ranges;
+this inventory does not replace fresh vulnerability scans.
 
 Fresh installs require bitstring>=4.1.1,<5 because the supported bus client
 imports BitStream. This legacy Client representation supports
