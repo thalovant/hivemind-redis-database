@@ -10,15 +10,19 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compa
   before its authoritative read (`_admission_refill_guard`) and writes the
   record in MULTI/EXEC (`_refill_admission_record`); a `WatchError` drops the
   write. No guard, no write. `_lookup_logger` falls back to stdlib logging.
+  `_search_with_index` logs the field it searched, never the value (on the
+  admission path, the API key).
   Version `0.1.1a8+thalovant.1`.
 - **Verification:**
   - `tests/test_admission_revocation_race.py` runs the revocation (or a
-    demotion) inside the authoritative read, against fakeredis. On 0.1.1a8,
+    demotion) inside the authoritative read, against the suite's `FakeRedis` (its pipelines honour WATCH). On 0.1.1a8,
     5 of its 6 tests fail: the revoked key is admitted from the restored
     record, and the demoted client keeps `is_admin`. With this change, all pass.
   - The suite's `FakeRedis`/`FakePipeline` learn WATCH, MULTI, EXPIRE and
     reset, so the existing admission tests go through the guarded write.
   - `TestLookupLoggerFallback`: 2 tests, both failing without the fallback.
+  - `test_debug_output_is_still_produced_with_level_restored` now asserts the
+    API key is absent from the debug lines, and fails on 0.1.1a8, which logged it.
   - `pytest tests`: 109 passed, 6 skipped.
 
 ### Transparency Report

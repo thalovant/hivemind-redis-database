@@ -4,20 +4,20 @@ A lookup that misses the admission record reads the authoritative record and
 then writes the cache. A revocation or update that commits between those two
 steps must not be undone by that write. These tests put the mutation exactly
 there -- inside the authoritative read, after it has returned its answer --
-against fakeredis, which implements WATCH/MULTI/EXEC as Redis does.
+against the suite's FakeRedis, whose pipelines honour WATCH as Redis does
+(EXEC raises WatchError when a watched key was written since WATCH).
 """
 import unittest
 from unittest.mock import patch
 
-import fakeredis
-import redis
 from redis.cluster import key_slot
 
 from hivemind_plugin_manager.database import Client
 from hivemind_redis_database import RedisDB
+from test_redisdb import FakePipeline, FakeRedis
 
 
-def _db(redis_client: "fakeredis.FakeRedis", *, hash_tag=None) -> RedisDB:
+def _db(redis_client: FakeRedis, *, hash_tag=None) -> RedisDB:
     """A RedisDB on ``redis_client`` without connecting anywhere."""
     db = object.__new__(RedisDB)
     db.redis = redis_client
@@ -43,7 +43,7 @@ def _interleave(db: RedisDB, mutation) -> None:
 
 class AdmissionRefillIsCompareAndSet(unittest.TestCase):
     def setUp(self) -> None:
-        self.redis = fakeredis.FakeRedis(decode_responses=True)
+        self.redis = FakeRedis()
         self.db = _db(self.redis)
         self.client = Client(client_id=1, name="satellite", api_key="key-1", is_admin=True)
         self.assertTrue(self.db.add_item(self.client))
@@ -80,7 +80,7 @@ class AdmissionRefillIsCompareAndSet(unittest.TestCase):
 
         self.assertEqual(found.client_id, 1)
         self.assertIsNotNone(self.redis.get(self.record))
-        self.assertGreater(self.redis.ttl(self.record), 0)
+        self.assertEqual(self.redis.expiries[self.record], self.db.admission_record_ttl)
         # And the next lookup is served from it.
         with patch.object(self.db, "_authoritative_client_by_api_key",
                           side_effect=AssertionError("authoritative read on a warm record")):
@@ -88,9 +88,9 @@ class AdmissionRefillIsCompareAndSet(unittest.TestCase):
 
     def test_no_guard_means_no_write(self) -> None:
         def refuse_watch(*_args, **_kwargs):
-            raise redis.ResponseError("WATCH unavailable")
+            raise RuntimeError("WATCH unavailable")
 
-        with patch.object(redis.client.Pipeline, "watch", refuse_watch):
+        with patch.object(FakePipeline, "watch", refuse_watch):
             found = self.db.get_client_by_api_key("key-1")
 
         self.assertEqual(found.client_id, 1, "a guard failure must not refuse a valid client")
@@ -103,12 +103,13 @@ class AdmissionRefillIsCompareAndSet(unittest.TestCase):
         self.assertTrue(self.db.remove_client("1"))
 
         self.assertNotEqual(self.redis.get(epoch), before)
-        self.assertGreater(self.redis.ttl(epoch), 0, "epoch keys must expire")
+        self.assertEqual(self.redis.expiries[epoch], self.db.admission_record_ttl,
+                         "epoch keys must expire")
 
 
 class EpochSharesTheRecordsSlot(unittest.TestCase):
     def test_same_cluster_slot_under_a_hash_tag(self) -> None:
-        db = _db(fakeredis.FakeRedis(decode_responses=True), hash_tag="fleet")
+        db = _db(FakeRedis(), hash_tag="fleet")
         self.assertEqual(key_slot(db._api_key_epoch_key("k").encode()),
                          key_slot(db._api_key_record_key("k").encode()))
 

@@ -1182,12 +1182,13 @@ class RedisDB(AbstractRemoteDB):
         # describe. The walk gets more expensive the deeper the stack, and a
         # lookup from Core's admission path is deep.
         log = _lookup_logger()
-        log.debug("Searching for clients by indexed field '%s' with value '%s'",
-                  key, val)
+        # The field, never the value: on the admission path the value is the
+        # client's API key, a working credential.
+        log.debug("Searching for clients by indexed field '%s'", key)
         client_ids = self.redis.smembers(self._key(key, val))
         client_keys = [self._client_key(cid) for cid in client_ids]
         res = self._load_clients(client_keys)
-        log.debug("Found %d clients matching '%s=%s'", len(res), key, val)
+        log.debug("Found %d clients by indexed field '%s'", len(res), key)
         return res
 
     def _search_brute_force(self, key: str, val) -> List[Client]:

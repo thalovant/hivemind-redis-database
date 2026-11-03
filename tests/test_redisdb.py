@@ -28,6 +28,8 @@ class FakeRedis:
         self.hget_calls = []
         # Bumped on every write to a key, so a FakePipeline can honour WATCH.
         self.versions = {}
+        # Seconds each key was last given to live, by SET ... EX or EXPIRE.
+        self.expiries = {}
 
     def _touch(self, key):
         self.versions[key] = self.versions.get(key, 0) + 1
@@ -43,20 +45,21 @@ class FakeRedis:
         return False
 
     def set(self, key, value, nx=False, ex=None):
-        del ex
         if nx:
             if self.exists(key):
                 return False
             self.storage[key] = value
             self._touch(key)
+            self.expiries[key] = ex
             return True
         self.storage[key] = value
         self._touch(key)
+        self.expiries[key] = ex
         return True
 
     def expire(self, key, seconds):
-        del seconds
         self._touch(key)
+        self.expiries[key] = seconds
         return self.exists(key)
 
     def get(self, key):

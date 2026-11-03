@@ -78,7 +78,8 @@ class TestLookupLogging(unittest.TestCase):
 
         joined = "\n".join(captured.output)
         self.assertIn("api_key", joined)
-        self.assertIn("key-1", joined)
+        # The field is logged, never the value: here it is a working credential.
+        self.assertNotIn("key-1", joined)
 
 
 

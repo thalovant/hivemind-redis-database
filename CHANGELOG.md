@@ -15,6 +15,8 @@
 - The lookup logger falls back to the standard library logger when the
   logging facade lacks the attributes it reads, so the admission path cannot
   fail on a log line.
+- An indexed lookup's debug lines name the field, never the value: on the
+  admission path that value is the client's API key.
 - The build carries the PEP 440 local label `+thalovant.1`.
 
 ## 0.1.1a8 — this fork brought up to the published release (2026-11-03)

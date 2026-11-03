@@ -16,6 +16,11 @@ Fixed by a per-key epoch that every invalidation moves and the refill WATCHes
 The operator's own invalidations need the same epoch move
 (thalovant/hivemind-k8s-operator, `_drop_admission_records`).
 
+Also fixed: `_search_with_index` wrote the searched value into its DEBUG
+lines, and on the admission path that value is the client's API key
+(CodeQL `py/clear-text-logging-sensitive-data`). It now logs the field only;
+`tests/test_lookup_logging.py` asserts the key is absent.
+
 Remaining, by design: the opt-in in-process cache (`api_key_cache_ttl`,
 default off) is per process, so a revocation through another process takes
 up to that TTL to reach it (documented in README).
