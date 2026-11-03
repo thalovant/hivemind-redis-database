@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Iterable, Union
 import json
+import logging
 import math
 import socket
 import threading
@@ -65,19 +66,25 @@ def _lookup_logger():
     process-wide ``logging.getLogger`` name.
     """
     global _LOOKUP_LOGGER, _LOOKUP_LOGGER_KEY
-    key = (LOG.name, LOG.base_path)
-    if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
-        with _LOOKUP_LOGGER_LOCK:
-            if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
-                name = f"{LOG.name} - {__name__}"
-                stale = LOG._loggers.pop(name, None)
-                if stale is not None:
-                    for handler in list(stale.handlers):
-                        stale.removeHandler(handler)
-                        handler.close()
-                _LOOKUP_LOGGER = LOG.create_logger(name)
-                _LOOKUP_LOGGER_KEY = key
-    return _LOOKUP_LOGGER
+    # Everything below reads LOG attributes the logging facade does not
+    # document. This sits on the admission path, before any level check, so an
+    # incompatible facade must cost the log line, never the lookup.
+    try:
+        key = (LOG.name, LOG.base_path)
+        if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
+            with _LOOKUP_LOGGER_LOCK:
+                if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
+                    name = f"{LOG.name} - {__name__}"
+                    stale = LOG._loggers.pop(name, None)
+                    if stale is not None:
+                        for handler in list(stale.handlers):
+                            stale.removeHandler(handler)
+                            handler.close()
+                    _LOOKUP_LOGGER = LOG.create_logger(name)
+                    _LOOKUP_LOGGER_KEY = key
+        return _LOOKUP_LOGGER
+    except Exception:
+        return logging.getLogger(__name__)
 
 
 def _iter_client_records_safely(db) -> "Iterable[tuple[str, str]]":
@@ -1247,18 +1254,20 @@ class RedisDB(AbstractRemoteDB):
             LOG.warning(f"Admission cache refill failed: {e}")
 
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
-        """Return the client for ``api_key``, usually in a single ``HGET``.
+        """Return the client for ``api_key``, usually in a single ``GET``.
 
         ``AbstractDB`` resolves this through :meth:`search_by_value`, which
         costs two round trips here — an index or RediSearch lookup for the
         client id, then a fetch of the record itself. hivemind-core calls this
         on every connection admission, so the pair is paid per handshake.
 
-        A materialized hash collapses the steady state to one round trip. It
-        is only ever a cache: a hit is accepted only if the stored record still
-        carries the key it was filed under, and every write path invalidates
-        the fields it touches, so a miss simply falls back to the authoritative
-        lookup and refills the hash.
+        A per-key expiring admission record (``api_key_record:<key>``)
+        collapses the steady state to one round trip. It is only ever a cache:
+        a hit is accepted only if the stored record still carries the key it
+        was filed under, every write path drops the records it affects, and a
+        miss falls back to the authoritative lookup and refills the record --
+        compare-and-set against invalidation, so a write that lands during the
+        lookup is never undone by the refill.
         """
         if api_key is None:
             return None

@@ -896,7 +896,7 @@ class TestRedisDBSchemaV2RoundTrip(unittest.TestCase):
 
 
 class TestApiKeyAdmissionRecords(unittest.TestCase):
-    """The materialized admission hash is a cache and must behave like one.
+    """The per-key admission record is a cache and must behave like one.
 
     hivemind-core resolves an API key on every connection admission, so the
     steady state must be one round trip -- and a stale entry must never admit

@@ -1,6 +1,36 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Bring the fork up to the published 0.1.1a8 source.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compare-and-set against revocation.
 
 # Maintenance Report
+
+## 2026-11-03 — admission cache write is compare-and-set against revocation
+
+- **What:** `_invalidate_api_key_records` moves `api_key_epoch:<key>` (INCR,
+  then EXPIRE `admission_record_ttl`) before deleting the record, inside the
+  caller's MULTI/EXEC. `get_client_by_api_key` takes a WATCH on that key
+  before its authoritative read (`_admission_refill_guard`) and writes the
+  record in MULTI/EXEC (`_refill_admission_record`); a `WatchError` drops the
+  write. No guard, no write. `_lookup_logger` falls back to stdlib logging.
+  Version `0.1.1a8+thalovant.1`.
+- **Verification:**
+  - `tests/test_admission_revocation_race.py` runs the revocation (or a
+    demotion) inside the authoritative read, against fakeredis. On 0.1.1a8,
+    5 of its 6 tests fail: the revoked key is admitted from the restored
+    record, and the demoted client keeps `is_admin`. With this change, all pass.
+  - The suite's `FakeRedis`/`FakePipeline` learn WATCH, MULTI, EXPIRE and
+    reset, so the existing admission tests go through the guarded write.
+  - `TestLookupLoggerFallback`: 2 tests, both failing without the fallback.
+  - `pytest tests`: 109 passed, 6 skipped.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5.
+- **Actions Taken:** wrote the interleaving tests first and ran them against
+  the unchanged code, implemented the epoch and the guarded refill, extended
+  the test fakes, and added the logger fallback and docstring fixes from the
+  review of the sync PR.
+- **Oversight:** requested by the platform lead. The listener image that
+  carries this build, and any hub rollout, are the owner's decision.
+
 
 ## 2026-11-03 — fork brought up to the published 0.1.1a8
 

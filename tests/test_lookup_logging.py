@@ -81,8 +81,6 @@ class TestLookupLogging(unittest.TestCase):
         self.assertIn("key-1", joined)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestLookupLoggerLifecycle(unittest.TestCase):
@@ -129,3 +127,43 @@ class TestLookupLoggerLifecycle(unittest.TestCase):
         streams = [h for h in handlers
                    if type(h).__name__ == "StreamHandler"]
         self.assertLessEqual(len(streams), 1)
+
+
+class TestLookupLoggerFallback(unittest.TestCase):
+    """The lookup logger reads undocumented LOG attributes; a facade without
+    them must cost the log line, not the admission lookup."""
+
+    def setUp(self):
+        self._saved = (hrd._LOOKUP_LOGGER, hrd._LOOKUP_LOGGER_KEY)
+        hrd._LOOKUP_LOGGER, hrd._LOOKUP_LOGGER_KEY = None, None
+
+    def tearDown(self):
+        hrd._LOOKUP_LOGGER, hrd._LOOKUP_LOGGER_KEY = self._saved
+
+    def test_a_facade_without_its_internals_falls_back_to_stdlib_logging(self):
+        class BareFacade:
+            name = "HiveMind"
+            base_path = "stdout"
+
+        with patch.object(hrd, "LOG", BareFacade()):
+            logger = hrd._lookup_logger()
+        self.assertIsInstance(logger, logging.Logger)
+        self.assertEqual(logger.name, hrd.__name__)
+
+    def test_an_indexed_lookup_survives_that_facade(self):
+        class BareFacade:
+            name = "HiveMind"
+            base_path = "stdout"
+
+        redis = FakeRedis()
+        db = object.__new__(RedisDB)
+        db.redis, db.redis_pool, db.index_prefix = redis, redis.connection_pool, "client"
+        db.redisearch_available, db.is_cluster, db.cluster_hash_tag = False, False, None
+        self.assertTrue(db.add_item(make_client(client_id=1, name="n", api_key="k")))
+        with patch.object(hrd, "LOG", BareFacade()):
+            found = db._search_with_index("api_key", "k")
+        self.assertEqual([c.client_id for c in found], [1])
+
+
+if __name__ == "__main__":
+    unittest.main()
