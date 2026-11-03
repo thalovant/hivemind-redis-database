@@ -1,6 +1,13 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Bring the fork up to the published 0.1.1a8 source.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Re-pin filelock outside the advisory ranges (3.20.3 on Python 3.10, >=4.2.1,<5 on 3.11+) after the 0.1.1a8 sync dropped it.
 
 # Maintenance Report
+
+## 2026-11-03: filelock re-pinned for the dependency scan
+
+- **Change:** `pyproject.toml` pins `filelock==3.20.3; python_version < '3.11'` and `filelock>=4.2.1,<5; python_version >= '3.11'`; new `tests/test_dependency_pins.py` keeps both pins and the bitstring cap.
+- **Why:** after #12 the platform scan resolved filelock 3.32.7 for this package (HIGH advisory, fixed in 4.2.1) and failed for every infrastructure change.
+- **Verification:** `pytest tests/test_dependency_pins.py`: 2 passed. `uv pip compile pyproject.toml` on 3.13 with the reviewed combo-lock override: filelock 4.2.7; on 3.10 without it: filelock 3.20.3 with combo-lock 0.3.1.
+- **Transparency Report:** AI model Claude Opus 5.5 (`claude-opus-5-5`) in Claude Code; wrote the pin, the guard test and these notes, verified the resolutions locally; no human review yet.
 
 ## 2026-11-03 — fork brought up to the published 0.1.1a8
 

@@ -25,6 +25,14 @@ dependencies = [
     # hivemind-bus-client imports BitStream at module load, which bitstring 5
     # removed, while only asking for bitstring>=4.1.1.
     "bitstring>=4.1.1,<5",
+    # This repository's own graph must not resolve an affected filelock: the
+    # platform's dependency scan resolves it on its own, not inside the
+    # runtime image. 4.2.1 is the first release outside the published
+    # advisory ranges; Python 3.10 has no fixed release, so it keeps 3.20.3,
+    # the least-affected one. On 3.11+ the reviewed combo-lock build that the
+    # runtime images install is what lets filelock 4 resolve.
+    "filelock==3.20.3; python_version < '3.11'",
+    "filelock>=4.2.1,<5; python_version >= '3.11'",
     "redis>=4.2.0",
     "hiredis>=2.0.0",
     "hivemind-plugin-manager>=0.5.0,<1.0.0",

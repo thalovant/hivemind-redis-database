@@ -1,12 +1,14 @@
-Last Edit: Codex - 2026-10-25 - Motive: Record verified dependency security and compatibility constraints.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Re-pin filelock outside the advisory ranges (3.20.3 on Python 3.10, >=4.2.1,<5 on 3.11+) after the 0.1.1a8 sync dropped it.
 
 # FAQ
 
-## Why is filelock pinned exactly?
+## Why is filelock pinned?
 
-3.20.3 contains the earlier fixes and predates the newer affected features.
-A broad 3.x range can select an affected version. See the primary ranges and
-verified limits in [dependency security](docs/dependency-security.md).
+So that this package's own dependency graph never selects an affected
+filelock: 4.2.1 is the first release outside the published advisory ranges, so
+Python 3.11+ requires `>=4.2.1,<5` (it resolves with the reviewed combo-lock
+build the runtime images install). Python 3.10 has no fixed release and keeps
+3.20.3, the least-affected one. `tests/test_dependency_pins.py` guards both.
 
 ## Does this alter runtime behavior?
 

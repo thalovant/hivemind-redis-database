@@ -1,6 +1,10 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record that the 0.1.0a7-line constraints below are retired by the 0.1.1a8 sync.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Re-pin filelock outside the advisory ranges (3.20.3 on Python 3.10, >=4.2.1,<5 on 3.11+) after the 0.1.1a8 sync dropped it.
 
 # Audit
+
+## 2026-11-03: filelock re-pinned
+
+The 0.1.1a8 sync (#12) retired the exact `filelock` pin on the grounds that the runtime image constrains it. The platform's dependency scan resolves this repository's graph on its own, though, and then selected filelock 3.32.7 (inside the published HIGH advisory range, fixed in 4.2.1), which failed the scan for every infrastructure change. `pyproject.toml` now pins `filelock==3.20.3` on Python 3.10 (no fixed release exists there; the least-affected one) and `filelock>=4.2.1,<5` on 3.11+, which resolves with the reviewed combo-lock build the runtime images install (4.2.7 at the time of writing). Guard: `tests/test_dependency_pins.py`. A plain PyPI install on 3.11+ now refuses to resolve rather than silently taking an affected filelock, the same trade the skills made.
 
 ## 2026-11-03 — superseded by the 0.1.1a8 sync
 

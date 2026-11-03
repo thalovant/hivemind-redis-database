@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (2026-11-03)
+
+- Re-pin `filelock` outside the advisory ranges: 3.20.3 on Python 3.10, `>=4.2.1,<5` on 3.11+ (guard test `tests/test_dependency_pins.py`).
+
 ## 0.1.1a8 — this fork brought up to the published release (2026-11-03)
 
 The fork's `dev` was on the 0.1.0a7 line while every hub runs the published
