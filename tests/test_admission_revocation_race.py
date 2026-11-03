@@ -103,8 +103,51 @@ class AdmissionRefillIsCompareAndSet(unittest.TestCase):
         self.assertTrue(self.db.remove_client("1"))
 
         self.assertNotEqual(self.redis.get(epoch), before)
-        self.assertEqual(self.redis.expiries[epoch], self.db.admission_record_ttl,
-                         "epoch keys must expire")
+        self.assertEqual(self.redis.expiries[epoch],
+                         max(self.db.admission_record_ttl, RedisDB.ADMISSION_EPOCH_TTL),
+                         "epoch keys must expire, and outlive any lookup that may still write")
+
+    def test_the_guard_is_taken_only_after_the_authoritative_read(self) -> None:
+        """No pooled connection may be held across the read, which needs its own."""
+        events = []
+        real_watch = FakePipeline.watch
+
+        def watch(pipeline, *keys):
+            events.append("watch")
+            return real_watch(pipeline, *keys)
+
+        _interleave(self.db, lambda: events.append("authoritative read"))
+        with patch.object(FakePipeline, "watch", watch):
+            self.db.get_client_by_api_key("key-1")
+
+        self.assertEqual(events, ["authoritative read", "watch"])
+        self.assertIsNotNone(self.redis.get(self.record))
+
+    def test_a_revocation_between_the_guard_and_the_write_is_caught(self) -> None:
+        """The epoch check passed; WATCH must still refuse a write after it."""
+        real_multi = FakePipeline.multi
+        revoked = []
+
+        def multi(pipeline):
+            if not revoked:
+                revoked.append(self.db.remove_client("1"))
+            return real_multi(pipeline)
+
+        with patch.object(FakePipeline, "multi", multi):
+            self.db.get_client_by_api_key("key-1")
+
+        self.assertEqual(revoked, [True])
+        self.assertIsNone(self.redis.get(self.record))
+        self.assertIsNone(self.db.get_client_by_api_key("key-1"))
+
+    def test_a_lookup_slower_than_half_an_epoch_writes_nothing(self) -> None:
+        """Its epoch could have expired back to the value read at the start."""
+        clock = iter([0.0, RedisDB.ADMISSION_EPOCH_TTL / 2 + 1])
+        with patch("hivemind_redis_database.time.monotonic", lambda: next(clock)):
+            found = self.db.get_client_by_api_key("key-1")
+
+        self.assertEqual(found.client_id, 1)
+        self.assertIsNone(self.redis.get(self.record))
 
 
 class EpochSharesTheRecordsSlot(unittest.TestCase):

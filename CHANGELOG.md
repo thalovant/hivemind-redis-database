@@ -6,10 +6,13 @@
   then writes `api_key_record:<key>`. An update or revocation committing
   between those two steps was undone by that write until the record expired.
   Every invalidation now also moves `api_key_epoch:<key>` (INCR + EXPIRE) in
-  the same transaction, and the refill WATCHes it before its authoritative
-  read and writes in MULTI/EXEC, so such a write aborts the refill instead.
-  When the guard cannot be had, the lookup answers from the authoritative
-  record and writes no cache. Legacy cluster mode never fills this cache and
+  the same transaction. The lookup reads that epoch before its authoritative
+  read, and writes the record only if it is unchanged, under a WATCH taken
+  after the read and held for one GET and one MULTI/EXEC, so such a write
+  aborts the refill instead and no pooled connection is held across the
+  read. A lookup slower than half an epoch's lifetime does not write. When
+  the guard cannot be had, one warning says so and the lookup answers from
+  the authoritative record without writing. Legacy cluster mode never fills this cache and
   is unchanged; under a hash tag the epoch shares the record's slot. An
   operator that drops admission records must move the epoch too.
 - The lookup logger falls back to the standard library logger when the

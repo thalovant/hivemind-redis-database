@@ -396,6 +396,10 @@ class RedisDB(AbstractRemoteDB):
     #: ``SET ... EX`` is used rather than ``HEXPIRE`` because that needs Redis
     #: 7.4 and this backend only declares ``redis>=4.2.0``.
     ADMISSION_CACHE_TTL = 60
+    #: Floor for an epoch key's lifetime, and twice the longest lookup whose
+    #: refill is still written (see :meth:`get_client_by_api_key`). Anything
+    #: much longer than a lookup works; the operator uses the same 600 s.
+    ADMISSION_EPOCH_TTL = 600
 
     def _api_key_record_key(self, api_key: str) -> str:
         """Key holding the serialized client for ``api_key``.
@@ -439,9 +443,11 @@ class RedisDB(AbstractRemoteDB):
                 # later epoch bump would survive it.
                 epoch_key = self._api_key_epoch_key(str(api_key))
                 target.incr(epoch_key)
-                # Only a refill in flight needs the epoch, and none outlives
-                # the record's own expiry.
-                target.expire(epoch_key, self.admission_record_ttl)
+                # Only a refill in flight needs the epoch; lookups that take
+                # longer than half of this do not write (see
+                # get_client_by_api_key), so it cannot expire under one.
+                target.expire(epoch_key, max(int(self.admission_record_ttl),
+                                             self.ADMISSION_EPOCH_TTL))
                 target.delete(self._api_key_record_key(str(api_key)))
             except Exception as e:
                 # Losing an invalidation would leave a stale credential
@@ -1220,39 +1226,55 @@ class RedisDB(AbstractRemoteDB):
         matches = self.search_by_value("api_key", api_key)
         return matches[0] if matches else None
 
-    def _admission_refill_guard(self, api_key: str):
-        """A transactional pipeline WATCHing ``api_key``'s epoch, or None.
+    def _read_epoch(self, api_key: str):
+        """``(True, value)`` of ``api_key``'s epoch, or ``(False, None)`` if unreadable."""
+        try:
+            return True, self.redis.get(self._api_key_epoch_key(api_key))
+        except Exception as e:
+            self._refill_unguarded(e)
+            return False, None
 
-        None when the guard cannot be had; the lookup then answers from the
-        authoritative record and writes no cache, because an unguarded write
-        could restore a record a concurrent revocation just dropped.
+    def _refill_unguarded(self, error: Exception) -> None:
+        """Say once, loudly, that admission records are not being refilled."""
+        if not getattr(self, "_refill_guard_warned", False):
+            self._refill_guard_warned = True
+            LOG.warning("Admission records are not refilled: the compare-and-set "
+                        f"against revocation is unavailable on this client ({error}). "
+                        "Lookups still answer from the authoritative record.")
+        else:
+            LOG.debug(f"Admission cache refill skipped, cannot guard it: {error}")
+
+    def _refill_admission_record(self, api_key: str, epoch_before, record_key: str,
+                                 client: Client) -> None:
+        """Write the admission record if ``api_key``'s epoch is still ``epoch_before``.
+
+        The WATCH is taken only now, after the authoritative read, and held for
+        a GET and one MULTI/EXEC: an invalidation that committed during the
+        read has moved the epoch, and one that commits from here on aborts the
+        EXEC. No pooled connection is held across the authoritative read,
+        which needs connections of its own.
         """
+        epoch_key = self._api_key_epoch_key(api_key)
         guard = None
         try:
             guard = self.redis.pipeline(transaction=True)
-            guard.watch(self._api_key_epoch_key(api_key))
-            return guard
-        except Exception as e:
-            LOG.warning(f"Admission cache refill skipped, cannot guard it: {e}")
-            if guard is not None:
-                try:
-                    guard.reset()
-                except Exception:
-                    pass
-            return None
-
-    def _refill_admission_record(self, guard, record_key: str, client: Client) -> None:
-        """Write the admission record, unless ``guard`` saw the key invalidated."""
-        if guard is None:
-            return
-        try:
+            guard.watch(epoch_key)
+            if guard.get(epoch_key) != epoch_before:
+                LOG.debug("Admission cache refill dropped: the key was invalidated during the lookup")
+                return
             guard.multi()
             guard.set(record_key, client.serialize(), ex=self.admission_record_ttl)
             guard.execute()
         except redis.WatchError:
             LOG.debug("Admission cache refill dropped: the key was invalidated during the lookup")
         except Exception as e:
-            LOG.warning(f"Admission cache refill failed: {e}")
+            self._refill_unguarded(e)
+        finally:
+            if guard is not None:
+                try:
+                    guard.reset()
+                except Exception as e:
+                    LOG.warning(f"Failed to release the admission refill guard: {e}")
 
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
         """Return the client for ``api_key``, usually in a single ``GET``.
@@ -1311,20 +1333,17 @@ class RedisDB(AbstractRemoteDB):
             except Exception as e:
                 LOG.warning(f"Failed to drop invalid admission record: {e}")
 
-        # WATCH before the authoritative read: a write that invalidates this
-        # key after the read moves its epoch, and the refill below is then
-        # refused instead of restoring what that write replaced.
-        guard = self._admission_refill_guard(api_key)
-        try:
-            client = self._authoritative_client_by_api_key(api_key)
-            if client is not None and client.api_key == api_key:
-                self._refill_admission_record(guard, record_key, client)
-        finally:
-            if guard is not None:
-                try:
-                    guard.reset()
-                except Exception as e:
-                    LOG.warning(f"Failed to release the admission refill guard: {e}")
+        # The epoch before the authoritative read: a write that invalidates
+        # this key from here on moves it, and the refill below is then refused
+        # instead of restoring what that write replaced. A lookup slower than
+        # half an epoch's lifetime does not write at all, so the epoch cannot
+        # expire back to the value read here while the lookup runs.
+        started = time.monotonic()
+        guarded, epoch_before = self._read_epoch(api_key)
+        client = self._authoritative_client_by_api_key(api_key)
+        if (guarded and client is not None and client.api_key == api_key
+                and time.monotonic() - started < self.ADMISSION_EPOCH_TTL / 2):
+            self._refill_admission_record(api_key, epoch_before, record_key, client)
         # Cache the outcome in-process too -- including a miss: unknown or
         # revoked keys hammered by a reconnect storm must also be absorbed,
         # and caching None is deny-side, so it is safe. A record whose key no

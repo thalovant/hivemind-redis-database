@@ -26,6 +26,8 @@ class TestAdmissionRecordTTL(unittest.TestCase):
     def test_refill_uses_configured_ttl(self):
         db = _db(admission_record_ttl=3600)
         db.redis.get.return_value = None
+        # The guard re-reads the key's invalidation epoch; unchanged here.
+        db.redis.pipeline.return_value.get.return_value = None
         client = MagicMock()
         client.api_key = "k1"
         client.serialize.return_value = "{}"

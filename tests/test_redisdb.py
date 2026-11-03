@@ -142,17 +142,22 @@ class FakePipeline:
         self.redis = redis_client
         self.commands = []
         self.watched = {}
+        # Between WATCH and MULTI a redis-py pipeline runs commands at once.
+        self.immediate = False
 
     def watch(self, *keys):
         self.watched = {key: self.redis.versions.get(key, 0) for key in keys}
+        self.immediate = True
         return True
 
     def multi(self):
+        self.immediate = False
         return None
 
     def reset(self):
         self.commands = []
         self.watched = {}
+        self.immediate = False
 
     def expire(self, *args, **kwargs):
         self.commands.append(("expire", args, kwargs))
@@ -163,6 +168,8 @@ class FakePipeline:
         return self
 
     def get(self, *args, **kwargs):
+        if self.immediate:
+            return self.redis.get(*args, **kwargs)
         self.commands.append(("get", args, kwargs))
         return self
 
