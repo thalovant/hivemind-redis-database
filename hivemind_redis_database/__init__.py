@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Iterable, Union
 import json
+import logging
 import math
 import socket
 import threading
@@ -65,19 +66,25 @@ def _lookup_logger():
     process-wide ``logging.getLogger`` name.
     """
     global _LOOKUP_LOGGER, _LOOKUP_LOGGER_KEY
-    key = (LOG.name, LOG.base_path)
-    if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
-        with _LOOKUP_LOGGER_LOCK:
-            if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
-                name = f"{LOG.name} - {__name__}"
-                stale = LOG._loggers.pop(name, None)
-                if stale is not None:
-                    for handler in list(stale.handlers):
-                        stale.removeHandler(handler)
-                        handler.close()
-                _LOOKUP_LOGGER = LOG.create_logger(name)
-                _LOOKUP_LOGGER_KEY = key
-    return _LOOKUP_LOGGER
+    # Everything below reads LOG attributes the logging facade does not
+    # document. This sits on the admission path, before any level check, so an
+    # incompatible facade must cost the log line, never the lookup.
+    try:
+        key = (LOG.name, LOG.base_path)
+        if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
+            with _LOOKUP_LOGGER_LOCK:
+                if _LOOKUP_LOGGER is None or _LOOKUP_LOGGER_KEY != key:
+                    name = f"{LOG.name} - {__name__}"
+                    stale = LOG._loggers.pop(name, None)
+                    if stale is not None:
+                        for handler in list(stale.handlers):
+                            stale.removeHandler(handler)
+                            handler.close()
+                    _LOOKUP_LOGGER = LOG.create_logger(name)
+                    _LOOKUP_LOGGER_KEY = key
+        return _LOOKUP_LOGGER
+    except Exception:
+        return logging.getLogger(__name__)
 
 
 def _iter_client_records_safely(db) -> "Iterable[tuple[str, str]]":
@@ -381,16 +388,18 @@ class RedisDB(AbstractRemoteDB):
                 self._api_key_cache.pop(str(api_key), None)
 
     #: Historical default for :attr:`admission_record_ttl`, kept so existing
-    #: references keep working. How long a cached admission record may outlive
-    #: an invalidation it raced with: a refill reads the authoritative record
-    #: and then writes the cache; an update landing between those two steps
-    #: would otherwise be undone by the refill and persist until the next
-    #: write or ``sync()``. The window is sub-millisecond and the expiry
-    #: bounds what a lost race can cost, so a revoked or demoted client
-    #: cannot stay admitted. ``SET ... EX`` is used rather than ``HEXPIRE``
-    #: because that needs Redis 7.4 and this backend only declares
-    #: ``redis>=4.2.0``.
+    #: references keep working. A refill reads the authoritative record and
+    #: then writes the cache; it is compare-and-set against invalidation (see
+    #: :meth:`_api_key_epoch_key`), so an update or revocation that commits
+    #: between those two steps aborts the write instead of being undone by it.
+    #: The expiry is the backstop for an invalidation that was lost outright.
+    #: ``SET ... EX`` is used rather than ``HEXPIRE`` because that needs Redis
+    #: 7.4 and this backend only declares ``redis>=4.2.0``.
     ADMISSION_CACHE_TTL = 60
+    #: Floor for an epoch key's lifetime, and twice the longest lookup whose
+    #: refill is still written (see :meth:`get_client_by_api_key`). Anything
+    #: much longer than a lookup works; the operator uses the same 600 s.
+    ADMISSION_EPOCH_TTL = 600
 
     def _api_key_record_key(self, api_key: str) -> str:
         """Key holding the serialized client for ``api_key``.
@@ -401,12 +410,24 @@ class RedisDB(AbstractRemoteDB):
         """
         return self._key("api_key_record", api_key)
 
+    def _api_key_epoch_key(self, api_key: str) -> str:
+        """Key that every invalidation of ``api_key``'s admission record modifies.
+
+        A refill WATCHes it before its authoritative read and writes the
+        record in MULTI/EXEC, so an invalidation committing in between aborts
+        the write rather than being undone by it. Same namespace, and so the
+        same hash tag and cluster slot, as the record itself.
+        """
+        return self._key("api_key_epoch", api_key)
+
     def _invalidate_api_key_records(self, *api_keys, writer=None) -> None:
         """Drop cached admission records for ``api_keys``.
 
         ``writer`` lets a caller fold this into an existing pipeline so the
         invalidation lands in the same transaction as the write that caused
-        it. Skipped in legacy cluster mode, which never populates the cache.
+        it. Each key's epoch moves too, which aborts any refill that read the
+        authoritative record before this write committed. Skipped in legacy
+        cluster mode, which never populates the cache.
         """
         if self._legacy_cluster_mode():
             return
@@ -417,6 +438,16 @@ class RedisDB(AbstractRemoteDB):
             # One key per call: a multi-key DELETE would be cross-slot on a
             # cluster without a hash tag.
             try:
+                # The epoch first: in immediate mode these are separate
+                # commands, and a refill that writes between a delete and a
+                # later epoch bump would survive it.
+                epoch_key = self._api_key_epoch_key(str(api_key))
+                target.incr(epoch_key)
+                # Only a refill in flight needs the epoch; lookups that take
+                # longer than half of this do not write (see
+                # get_client_by_api_key), so it cannot expire under one.
+                target.expire(epoch_key, max(int(self.admission_record_ttl),
+                                             self.ADMISSION_EPOCH_TTL))
                 target.delete(self._api_key_record_key(str(api_key)))
             except Exception as e:
                 # Losing an invalidation would leave a stale credential
@@ -1157,12 +1188,13 @@ class RedisDB(AbstractRemoteDB):
         # describe. The walk gets more expensive the deeper the stack, and a
         # lookup from Core's admission path is deep.
         log = _lookup_logger()
-        log.debug("Searching for clients by indexed field '%s' with value '%s'",
-                  key, val)
+        # The field, never the value: on the admission path the value is the
+        # client's API key, a working credential.
+        log.debug("Searching for clients by indexed field '%s'", key)
         client_ids = self.redis.smembers(self._key(key, val))
         client_keys = [self._client_key(cid) for cid in client_ids]
         res = self._load_clients(client_keys)
-        log.debug("Found %d clients matching '%s=%s'", len(res), key, val)
+        log.debug("Found %d clients by indexed field '%s'", len(res), key)
         return res
 
     def _search_brute_force(self, key: str, val) -> List[Client]:
@@ -1194,19 +1226,71 @@ class RedisDB(AbstractRemoteDB):
         matches = self.search_by_value("api_key", api_key)
         return matches[0] if matches else None
 
+    def _read_epoch(self, api_key: str):
+        """``(True, value)`` of ``api_key``'s epoch, or ``(False, None)`` if unreadable."""
+        try:
+            return True, self.redis.get(self._api_key_epoch_key(api_key))
+        except Exception as e:
+            self._refill_unguarded(e)
+            return False, None
+
+    def _refill_unguarded(self, error: Exception) -> None:
+        """Say once, loudly, that admission records are not being refilled."""
+        if not getattr(self, "_refill_guard_warned", False):
+            self._refill_guard_warned = True
+            LOG.warning("Admission records are not refilled: the compare-and-set "
+                        f"against revocation is unavailable on this client ({error}). "
+                        "Lookups still answer from the authoritative record.")
+        else:
+            LOG.debug(f"Admission cache refill skipped, cannot guard it: {error}")
+
+    def _refill_admission_record(self, api_key: str, epoch_before, record_key: str,
+                                 client: Client) -> None:
+        """Write the admission record if ``api_key``'s epoch is still ``epoch_before``.
+
+        The WATCH is taken only now, after the authoritative read, and held for
+        a GET and one MULTI/EXEC: an invalidation that committed during the
+        read has moved the epoch, and one that commits from here on aborts the
+        EXEC. No pooled connection is held across the authoritative read,
+        which needs connections of its own.
+        """
+        epoch_key = self._api_key_epoch_key(api_key)
+        guard = None
+        try:
+            guard = self.redis.pipeline(transaction=True)
+            guard.watch(epoch_key)
+            if guard.get(epoch_key) != epoch_before:
+                LOG.debug("Admission cache refill dropped: the key was invalidated during the lookup")
+                return
+            guard.multi()
+            guard.set(record_key, client.serialize(), ex=self.admission_record_ttl)
+            guard.execute()
+        except redis.WatchError:
+            LOG.debug("Admission cache refill dropped: the key was invalidated during the lookup")
+        except Exception as e:
+            self._refill_unguarded(e)
+        finally:
+            if guard is not None:
+                try:
+                    guard.reset()
+                except Exception as e:
+                    LOG.warning(f"Failed to release the admission refill guard: {e}")
+
     def get_client_by_api_key(self, api_key: str) -> Optional[Client]:
-        """Return the client for ``api_key``, usually in a single ``HGET``.
+        """Return the client for ``api_key``, usually in a single ``GET``.
 
         ``AbstractDB`` resolves this through :meth:`search_by_value`, which
         costs two round trips here — an index or RediSearch lookup for the
         client id, then a fetch of the record itself. hivemind-core calls this
         on every connection admission, so the pair is paid per handshake.
 
-        A materialized hash collapses the steady state to one round trip. It
-        is only ever a cache: a hit is accepted only if the stored record still
-        carries the key it was filed under, and every write path invalidates
-        the fields it touches, so a miss simply falls back to the authoritative
-        lookup and refills the hash.
+        A per-key expiring admission record (``api_key_record:<key>``)
+        collapses the steady state to one round trip. It is only ever a cache:
+        a hit is accepted only if the stored record still carries the key it
+        was filed under, every write path drops the records it affects, and a
+        miss falls back to the authoritative lookup and refills the record --
+        compare-and-set against invalidation, so a write that lands during the
+        lookup is never undone by the refill.
         """
         if api_key is None:
             return None
@@ -1249,13 +1333,17 @@ class RedisDB(AbstractRemoteDB):
             except Exception as e:
                 LOG.warning(f"Failed to drop invalid admission record: {e}")
 
+        # The epoch before the authoritative read: a write that invalidates
+        # this key from here on moves it, and the refill below is then refused
+        # instead of restoring what that write replaced. A lookup slower than
+        # half an epoch's lifetime does not write at all, so the epoch cannot
+        # expire back to the value read here while the lookup runs.
+        started = time.monotonic()
+        guarded, epoch_before = self._read_epoch(api_key)
         client = self._authoritative_client_by_api_key(api_key)
-        if client is not None and client.api_key == api_key:
-            try:
-                self.redis.set(record_key, client.serialize(),
-                               ex=self.admission_record_ttl)
-            except Exception as e:
-                LOG.warning(f"Admission cache refill failed: {e}")
+        if (guarded and client is not None and client.api_key == api_key
+                and time.monotonic() - started < self.ADMISSION_EPOCH_TTL / 2):
+            self._refill_admission_record(api_key, epoch_before, record_key, client)
         # Cache the outcome in-process too -- including a miss: unknown or
         # revoked keys hammered by a reconnect storm must also be absorbed,
         # and caching None is deny-side, so it is safe. A record whose key no

@@ -26,6 +26,13 @@ class FakeRedis:
         self.pipeline_transaction_flags = []
         self.mget_calls = []
         self.hget_calls = []
+        # Bumped on every write to a key, so a FakePipeline can honour WATCH.
+        self.versions = {}
+        # Seconds each key was last given to live, by SET ... EX or EXPIRE.
+        self.expiries = {}
+
+    def _touch(self, key):
+        self.versions[key] = self.versions.get(key, 0) + 1
 
     def exists(self, key):
         return key in self.storage or key in self.hashes
@@ -33,18 +40,27 @@ class FakeRedis:
     def setnx(self, key, value):
         if not self.exists(key):
             self.storage[key] = value
+            self._touch(key)
             return True
         return False
 
     def set(self, key, value, nx=False, ex=None):
-        del ex
         if nx:
             if self.exists(key):
                 return False
             self.storage[key] = value
+            self._touch(key)
+            self.expiries[key] = ex
             return True
         self.storage[key] = value
+        self._touch(key)
+        self.expiries[key] = ex
         return True
+
+    def expire(self, key, seconds):
+        self._touch(key)
+        self.expiries[key] = seconds
+        return self.exists(key)
 
     def get(self, key):
         return self.storage.get(key)
@@ -54,6 +70,7 @@ class FakeRedis:
         return [self.get(key) for key in keys]
 
     def delete(self, key):
+        self._touch(key)
         removed = 0
         if key in self.storage:
             del self.storage[key]
@@ -64,16 +81,19 @@ class FakeRedis:
         return removed
 
     def incr(self, key):
+        self._touch(key)
         value = int(self.storage.get(key, 0)) + 1
         self.storage[key] = str(value)
         return value
 
     def sadd(self, key, value):
+        self._touch(key)
         members = self.storage.setdefault(key, set())
         members.add(str(value))
         return 1
 
     def srem(self, key, value):
+        self._touch(key)
         members = self.storage.get(key)
         if isinstance(members, set):
             members.discard(str(value))
@@ -85,6 +105,7 @@ class FakeRedis:
 
     def hset(self, key, *args, mapping=None):
         """Supports both ``hset(key, mapping=...)`` and ``hset(key, f, v)``."""
+        self._touch(key)
         values = self.hashes.setdefault(key, {})
         if mapping:
             values.update(mapping)
@@ -98,6 +119,7 @@ class FakeRedis:
         return self.hashes.get(key, {}).get(field)
 
     def hdel(self, key, *fields):
+        self._touch(key)
         values = self.hashes.get(key, {})
         return sum(1 for f in fields if values.pop(f, None) is not None)
 
@@ -119,12 +141,35 @@ class FakePipeline:
     def __init__(self, redis_client):
         self.redis = redis_client
         self.commands = []
+        self.watched = {}
+        # Between WATCH and MULTI a redis-py pipeline runs commands at once.
+        self.immediate = False
+
+    def watch(self, *keys):
+        self.watched = {key: self.redis.versions.get(key, 0) for key in keys}
+        self.immediate = True
+        return True
+
+    def multi(self):
+        self.immediate = False
+        return None
+
+    def reset(self):
+        self.commands = []
+        self.watched = {}
+        self.immediate = False
+
+    def expire(self, *args, **kwargs):
+        self.commands.append(("expire", args, kwargs))
+        return self
 
     def set(self, *args, **kwargs):
         self.commands.append(("set", args, kwargs))
         return self
 
     def get(self, *args, **kwargs):
+        if self.immediate:
+            return self.redis.get(*args, **kwargs)
         self.commands.append(("get", args, kwargs))
         return self
 
@@ -153,6 +198,10 @@ class FakePipeline:
         return self
 
     def execute(self):
+        if any(self.redis.versions.get(key, 0) != seen for key, seen in self.watched.items()):
+            self.reset()
+            raise redis.WatchError("Watched variable changed.")
+        self.watched = {}
         results = []
         for method, args, kwargs in self.commands:
             results.append(getattr(self.redis, method)(*args, **kwargs))
@@ -857,7 +906,7 @@ class TestRedisDBSchemaV2RoundTrip(unittest.TestCase):
 
 
 class TestApiKeyAdmissionRecords(unittest.TestCase):
-    """The materialized admission hash is a cache and must behave like one.
+    """The per-key admission record is a cache and must behave like one.
 
     hivemind-core resolves an API key on every connection admission, so the
     steady state must be one round trip -- and a stale entry must never admit

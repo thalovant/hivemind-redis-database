@@ -1,6 +1,50 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Bring the fork up to the published 0.1.1a8 source.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compare-and-set against revocation.
 
 # Maintenance Report
+
+## 2026-11-03 — admission cache write is compare-and-set against revocation
+
+- **What:** `_invalidate_api_key_records` moves `api_key_epoch:<key>` (INCR,
+  then EXPIRE `admission_record_ttl`) before deleting the record, inside the
+  caller's MULTI/EXEC. `get_client_by_api_key` reads that epoch before its
+  authoritative read (`_read_epoch`). After it, `_refill_admission_record`
+  WATCHes the epoch, re-reads it, and writes the record in MULTI/EXEC only
+  if it is unchanged; a `WatchError` drops the write. The WATCH is not held
+  across the authoritative read, so concurrent misses cannot exhaust the pool
+  that read needs (CodeRabbit, #13). A lookup slower than half of
+  `ADMISSION_EPOCH_TTL` (600 s) does not write. No guard, no write, and a
+  one-time warning. `_lookup_logger` falls back to stdlib logging.
+  `_search_with_index` logs the field it searched, never the value (on the
+  admission path, the API key).
+  Version `0.1.1a8+thalovant.1`.
+- **Verification:**
+  - `tests/test_admission_revocation_race.py` runs the revocation (or a
+    demotion) inside the authoritative read, against the suite's `FakeRedis` (its pipelines honour WATCH). On 0.1.1a8,
+    5 of its 6 tests fail: the revoked key is admitted from the restored
+    record, and the demoted client keeps `is_admin`. With this change, all pass.
+    Three more pin the ordering (the guard comes after the authoritative read;
+    a revocation between the guard and the write is caught by WATCH; a slow
+    lookup writes nothing). On 0.1.1a8 the file fails 8 of 9; with the guard
+    held across the read (the first version of #13), it fails 3.
+  - Against a real Redis 7.4.12, published 0.1.1a8 restores the revoked
+    record (TTL 60 s) and admits the key; this build refuses it.
+  - The suite's `FakeRedis`/`FakePipeline` learn WATCH, MULTI, EXPIRE and
+    reset, so the existing admission tests go through the guarded write.
+  - `TestLookupLoggerFallback`: 2 tests, both failing without the fallback.
+  - `test_debug_output_is_still_produced_with_level_restored` now asserts the
+    API key is absent from the debug lines, and fails on 0.1.1a8, which logged it.
+  - `pytest tests`: 112 passed, 6 skipped.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5.
+- **Actions Taken:** wrote the interleaving tests first and ran them against
+  the unchanged code, implemented the epoch and the guarded refill, extended
+  the test fakes, and added the logger fallback and docstring fixes from the
+  review of the sync PR.
+- **Oversight:** requested by the platform lead. The listener image that
+  carries this build, and any hub rollout, are the owner's decision.
+
 
 ## 2026-11-03 — fork brought up to the published 0.1.1a8
 

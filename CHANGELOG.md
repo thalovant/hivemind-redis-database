@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.1a8+thalovant.1 — admission cache write is compare-and-set against revocation (2026-11-03)
+
+- A lookup that misses the admission record reads the authoritative record and
+  then writes `api_key_record:<key>`. An update or revocation committing
+  between those two steps was undone by that write until the record expired.
+  Every invalidation now also moves `api_key_epoch:<key>` (INCR + EXPIRE) in
+  the same transaction. The lookup reads that epoch before its authoritative
+  read, and writes the record only if it is unchanged, under a WATCH taken
+  after the read and held for one GET and one MULTI/EXEC, so such a write
+  aborts the refill instead and no pooled connection is held across the
+  read. A lookup slower than half an epoch's lifetime does not write. When
+  the guard cannot be had, one warning says so and the lookup answers from
+  the authoritative record without writing. Legacy cluster mode never fills this cache and
+  is unchanged; under a hash tag the epoch shares the record's slot. An
+  operator that drops admission records must move the epoch too.
+- The lookup logger falls back to the standard library logger when the
+  logging facade lacks the attributes it reads, so the admission path cannot
+  fail on a log line.
+- An indexed lookup's debug lines name the field, never the value: on the
+  admission path that value is the client's API key.
+- The build carries the PEP 440 local label `+thalovant.1`.
+
 ## 0.1.1a8 — this fork brought up to the published release (2026-11-03)
 
 The fork's `dev` was on the 0.1.0a7 line while every hub runs the published

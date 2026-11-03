@@ -185,6 +185,14 @@ there. This backend accepts it, but does not use it for Redis namespacing.
   admin flows only see active clients.
 - `sync()` repairs drift by rebuilding counters, Redis set indexes, and
   RediSearch hash documents from stored client records.
+- A lookup that misses the per-key admission record refills it
+  compare-and-set: it reads the key's invalidation epoch before the
+  authoritative lookup, and writes the record under `WATCH` only if the epoch
+  has not moved, so an update or revocation committing meanwhile is never
+  undone. Under `cluster_hash_tag` this uses cluster pipelines with
+  transactions, which the write paths need already. If the guard cannot be
+  had, one warning says so, and lookups answer from the authoritative record
+  without refilling.
 
 ## Python Usage
 
