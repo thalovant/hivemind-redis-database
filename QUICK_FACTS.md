@@ -1,16 +1,15 @@
-Last Edit: Codex - 2026-10-25 - Motive: Record verified dependency security and compatibility constraints.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: The fork now carries the published 0.1.1a8.
 
 # Quick Facts
 
 | Field | Value |
 | --- | --- |
 | Package | hivemind-redis-database |
-| Version | 0.1.0a7 |
+| Version | 0.1.1a8 (byte-identical package to the PyPI release) |
 | Entry points | hivemind.database: hivemind-redis-db-plugin; hivemind-redis-migrate-cluster |
-| filelock | Exact 3.20.3 in real installation requirements |
-| Legacy Client API | manager>=0.6.0a1,<0.9; not compatible with modern quota>=0.10 graph |
-| Test graph | Existing policy-E2E stack; 94 passed, 6 local real-Redis skips |
-| Adoption | Source-only repair; not a replacement for maintained listener Redis0.1.1a8 |
+| Dependencies | The 0.1.1a8 release's own, plus bitstring>=4.1.1,<5: redis>=4.2.0, hiredis>=2.0.0, hivemind-plugin-manager>=0.5.0,<1.0.0, hivemind-bus-client>=0.4.4 |
+| Test graph | The release's `test` extra; 101 passed, 6 real-Redis skips |
+| Adoption | Same package the hub listener runs (0.1.1a8) |
 
 Source: [RedisDB](hivemind_redis_database/__init__.py); [dependency evidence](docs/dependency-security.md).
 

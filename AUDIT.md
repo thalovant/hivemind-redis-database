@@ -1,6 +1,16 @@
-Last Edit: Codex - 2026-10-25 - Motive: Record verified dependency security and compatibility constraints.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record that the 0.1.0a7-line constraints below are retired by the 0.1.1a8 sync.
 
 # Audit
+
+## 2026-11-03 — superseded by the 0.1.1a8 sync
+
+The fork now carries the published 0.1.1a8 package. The dependency findings
+below described the 0.1.0a7 line (exact `filelock` pin, `hivemind-plugin-manager<0.9`,
+the 4.x end-to-end stack) and no longer apply: the package declares the
+release's own dependencies, and the runtime image that installs it pins
+`filelock` and `bitstring` itself. `pytest tests`: 101 passed, 6 skipped.
+
+## Earlier (0.1.0a7 line)
 
 The security constraint is carried by the real installer, not solely by a
 scanner input. [Dependency tests](tests/test_dependency_security.py) verify
