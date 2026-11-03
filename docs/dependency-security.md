@@ -1,6 +1,8 @@
-Last Edit: Codex - 2026-10-25 - Motive: Record verified dependency security and compatibility constraints.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Mark the 0.1.0a7-line pins as superseded by the 0.1.1a8 sync.
 
 # Dependency Security
+
+> **Superseded (2026-11-03).** This page describes the 0.1.0a7 line. The fork now carries the published 0.1.1a8 package with that release's own dependencies, and `tests/test_dependency_security.py` was retired with those pins. The runtime image that installs this package constrains `filelock` and `bitstring` itself.
 
 The real installation source, `pyproject.toml`, pins `filelock==3.20.3`.
 This maintains the classic FileLock interface accepted by upstream combo-lock's

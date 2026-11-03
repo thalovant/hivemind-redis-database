@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1a8 — this fork brought up to the published release (2026-11-03)
+
+The fork's `dev` was on the 0.1.0a7 line while every hub runs the published
+0.1.1a8. The package (`hivemind_redis_database/__init__.py`, `migration.py`,
+`version.py`), its tests, `pyproject.toml` and `README.md` are now that
+release's files, byte for byte (the `test` extra additionally caps `bitstring`
+below 5, test-only). The 0.1.0a7-line constraints are retired with the code
+they described: the exact `filelock==3.20.3` and `hivemind-plugin-manager<0.9`
+pins and their tests, and the hivemind-core 4.x end-to-end suite and its
+workflow, which called a `crypto_key` client API that 5.x no longer has. The
+runtime image that installs this package carries its own `filelock` and
+`bitstring` constraints.
+
 ## [0.1.0a6](https://github.com/JarbasHiveMind/hivemind-redis-database/tree/0.1.0a6) (2026-07-16)
 
 [Full Changelog](https://github.com/JarbasHiveMind/hivemind-redis-database/compare/0.1.0a5...0.1.0a6)
