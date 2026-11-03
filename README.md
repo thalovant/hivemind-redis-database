@@ -168,7 +168,7 @@ there. This backend accepts it, but does not use it for Redis namespacing.
 | `ssl_cert_reqs` | TLS verification mode | `"required"`, `"optional"`, or `"none"` |
 | `ssl_check_hostname` | Hostname validation for TLS | Default: `true`; forced off when `ssl_cert_reqs="none"` |
 | `admission_record_ttl` | Lifetime (seconds) of the Redis-side per-key admission records | Default: `60` |
-| `api_key_cache_ttl` | Opt-in in-process TTL cache in front of admission records (seconds); `0` disables | Default: `0.0` (disabled) |
+| `api_key_cache_ttl` | Opt-in in-process TTL cache in front of admission records (seconds); `0` disables. Each process keeps its own copy, so a key revoked through another process (another hub replica, the operator) stays admitted here for up to this long; keep it short, a few seconds | Default: `0.0` (disabled) |
 | `api_key_cache_size` | Max entries in the in-process admission cache | Default: `2048` |
 
 ## Runtime Behavior

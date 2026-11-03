@@ -5,8 +5,9 @@
 The fork's `dev` was on the 0.1.0a7 line while every hub runs the published
 0.1.1a8. The package (`hivemind_redis_database/__init__.py`, `migration.py`,
 `version.py`), its tests, `pyproject.toml` and `README.md` are now that
-release's files, byte for byte (the `test` extra additionally caps `bitstring`
-below 5, test-only). The 0.1.0a7-line constraints are retired with the code
+release's files, byte for byte, except that `bitstring` is capped below 5
+in the runtime dependencies (the bus client still imports `BitStream`) and
+the README notes the cross-process delay of the opt-in in-process cache. The 0.1.0a7-line constraints are retired with the code
 they described: the exact `filelock==3.20.3` and `hivemind-plugin-manager<0.9`
 pins and their tests, and the hivemind-core 4.x end-to-end suite and its
 workflow, which called a `crypto_key` client API that 5.x no longer has. The
