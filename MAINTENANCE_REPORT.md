@@ -15,7 +15,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Bring the fork up to the publi
   0.1.0a7 line: `tests/test_dependency_security.py` (asserted that line's exact
   pins), `tests/e2e/` and `.github/workflows/policy-e2e.yml` (a hivemind-core 4.x
   stack whose `crypto_key` client API 5.x removed).
-- **Verification:** `pytest tests` — 103 passed, 6 skipped (real-Redis
+- **Verification:** `pytest tests` — 101 passed, 6 skipped (real-Redis
   integration tests skip without a server), on Python 3.13 with the `test`
   extra.
 
