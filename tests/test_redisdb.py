@@ -26,6 +26,11 @@ class FakeRedis:
         self.pipeline_transaction_flags = []
         self.mget_calls = []
         self.hget_calls = []
+        # Bumped on every write to a key, so a FakePipeline can honour WATCH.
+        self.versions = {}
+
+    def _touch(self, key):
+        self.versions[key] = self.versions.get(key, 0) + 1
 
     def exists(self, key):
         return key in self.storage or key in self.hashes
@@ -33,6 +38,7 @@ class FakeRedis:
     def setnx(self, key, value):
         if not self.exists(key):
             self.storage[key] = value
+            self._touch(key)
             return True
         return False
 
@@ -42,9 +48,16 @@ class FakeRedis:
             if self.exists(key):
                 return False
             self.storage[key] = value
+            self._touch(key)
             return True
         self.storage[key] = value
+        self._touch(key)
         return True
+
+    def expire(self, key, seconds):
+        del seconds
+        self._touch(key)
+        return self.exists(key)
 
     def get(self, key):
         return self.storage.get(key)
@@ -54,6 +67,7 @@ class FakeRedis:
         return [self.get(key) for key in keys]
 
     def delete(self, key):
+        self._touch(key)
         removed = 0
         if key in self.storage:
             del self.storage[key]
@@ -64,16 +78,19 @@ class FakeRedis:
         return removed
 
     def incr(self, key):
+        self._touch(key)
         value = int(self.storage.get(key, 0)) + 1
         self.storage[key] = str(value)
         return value
 
     def sadd(self, key, value):
+        self._touch(key)
         members = self.storage.setdefault(key, set())
         members.add(str(value))
         return 1
 
     def srem(self, key, value):
+        self._touch(key)
         members = self.storage.get(key)
         if isinstance(members, set):
             members.discard(str(value))
@@ -85,6 +102,7 @@ class FakeRedis:
 
     def hset(self, key, *args, mapping=None):
         """Supports both ``hset(key, mapping=...)`` and ``hset(key, f, v)``."""
+        self._touch(key)
         values = self.hashes.setdefault(key, {})
         if mapping:
             values.update(mapping)
@@ -98,6 +116,7 @@ class FakeRedis:
         return self.hashes.get(key, {}).get(field)
 
     def hdel(self, key, *fields):
+        self._touch(key)
         values = self.hashes.get(key, {})
         return sum(1 for f in fields if values.pop(f, None) is not None)
 
@@ -119,6 +138,22 @@ class FakePipeline:
     def __init__(self, redis_client):
         self.redis = redis_client
         self.commands = []
+        self.watched = {}
+
+    def watch(self, *keys):
+        self.watched = {key: self.redis.versions.get(key, 0) for key in keys}
+        return True
+
+    def multi(self):
+        return None
+
+    def reset(self):
+        self.commands = []
+        self.watched = {}
+
+    def expire(self, *args, **kwargs):
+        self.commands.append(("expire", args, kwargs))
+        return self
 
     def set(self, *args, **kwargs):
         self.commands.append(("set", args, kwargs))
@@ -153,6 +188,10 @@ class FakePipeline:
         return self
 
     def execute(self):
+        if any(self.redis.versions.get(key, 0) != seen for key, seen in self.watched.items()):
+            self.reset()
+            raise redis.WatchError("Watched variable changed.")
+        self.watched = {}
         results = []
         for method, args, kwargs in self.commands:
             results.append(getattr(self.redis, method)(*args, **kwargs))

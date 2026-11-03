@@ -31,7 +31,10 @@ class TestAdmissionRecordTTL(unittest.TestCase):
         client.serialize.return_value = "{}"
         db._authoritative_client_by_api_key = lambda api_key: client
         db.get_client_by_api_key("k1")
-        _, kwargs = db.redis.set.call_args
+        # The refill is written through the pipeline that WATCHes the key's
+        # invalidation epoch, never with a bare SET.
+        db.redis.set.assert_not_called()
+        _, kwargs = db.redis.pipeline.return_value.set.call_args
         self.assertEqual(kwargs.get("ex"), 3600)
 
     def test_validated_as_positive_integer(self):
