@@ -1,6 +1,57 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compare-and-set against revocation.
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
+[previous header] Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compare-and-set against revocation.
 
 # Audit
+
+## 2026-11-07 — SCAN on the listing, sync and migration paths (fixed)
+
+Finding: every path that enumerated client records walked the keyspace with
+SCAN (on `dev` @ 43c0215, `hivemind_redis_database/__init__.py`):
+`_iter_client_records_safely` l.95 (v1 -> v2 migration, which a namespace with
+no `schema_version` runs at start-up), `_search_brute_force` l.1212, `sync` l.1391
+and l.1415 (records, then every `name:`, `api_key:`, `api_key_record:`, `idx:`
+key), `__iter__` l.1528, and `migration.py` l.32/l.64. SCAN is keyless: Redis
+answers it with every key name in the database whatever the login's ACL key
+patterns are, so a login confined to one namespace could list other
+namespaces' key names, which here include `api_key:<key>`. A login without
+SCAN broke listing, `sync()` (called by the WebSocket and HTTP transports on an
+unknown key) and the start-up migration of a namespace with no
+`schema_version`, which raised from `__post_init__`.
+
+Fix: the `<prefix>:client_ids` set, written in the same MULTI/EXEC as each
+record (`add_item` l.976, `remove_client` l.1081, `update_client` l.1179), read
+by `_iter_client_keys` l.505; `ensure_client_index` l.537; `sync` l.1512 rebuilds
+from it. Legacy cluster mode keeps the walk (`_sync_by_key_walk` l.1608).
+Evidence: `tests/test_client_index.py` (13 tests on a fake that refuses SCAN
+with NOPERM or counts every SCAN; 2 more on a real Redis 8.2.9 under a login
+with no SCAN and no scripting, ACL LOG showing only the tolerated start-up
+probes). `pytest tests`: 126 passed, 8 skipped; with the real Redis, the 2
+ACL tests pass.
+
+Behaviour changes, deliberate:
+- `sync()` cannot find an index set keyed by a value no record carries; it is
+  left in place. `_search_with_index` l.1301 now drops records that no longer
+  carry the searched value (l.1329), so such a set answers nothing. Before
+  this, a stale `api_key:<old>` entry made `get_client_by_api_key(<old>)`
+  return the record that had moved to a new key.
+- `sync()` no longer deletes a stale create marker that never reached the
+  index; it expires after `CREATE_MARKER_TTL` (30 s).
+- `sync()` returns False without writing while the index is not marked built.
+- The v1 -> v2 migration (`_maybe_migrate`, `migrate`) and the cluster
+  migration CLI refuse to run over an index not marked built, so a partial
+  walk can neither stamp `schema_version` 2 nor copy part of a namespace
+  (review of #15; `SchemaMigrationWaitsForTheIndexTests`).
+
+Still open:
+- `ensure_client_index` decides that a namespace never held a record from
+  `count`, `id_seq`, `client_ids` and `client:1` (`_namespace_may_hold_records`
+  l.519). A namespace with records but none of those would be marked built and
+  listed empty. Every writer in this repository and the operator counts.
+- `hivemind-core`'s `ClientDatabase.add_client` gives a new client the id
+  `total_clients() + 1`, and `add_item` turns an existing id into an update.
+  When `count` is below the highest id (records deleted outside this plugin),
+  adding a client through the CLI overwrites another client's record. Not
+  changed here; see SUGGESTIONS.md.
 
 ## 2026-11-03 — admission cache write vs. concurrent invalidation (fixed)
 

@@ -52,6 +52,10 @@ class FakeRedis:
         self.storage[key] = str(value)
         return value
 
+    def expire(self, key, seconds):
+        del seconds
+        return self.exists(key)
+
     def sadd(self, key, value):
         members = self.storage.setdefault(key, set())
         members.add(str(value))
@@ -117,11 +121,19 @@ class FakePipeline:
         self.commands.append(("incr", args, kwargs))
         return self
 
+    def expire(self, *args, **kwargs):
+        self.commands.append(("expire", args, kwargs))
+        return self
+
+    def get(self, *args, **kwargs):
+        self.commands.append(("get", args, kwargs))
+        return self
+
     def execute(self):
-        for method, args, kwargs in self.commands:
-            getattr(self.redis, method)(*args, **kwargs)
+        results = [getattr(self.redis, method)(*args, **kwargs)
+                   for method, args, kwargs in self.commands]
         self.commands = []
-        return []
+        return results
 
 
 class MigrationTests(unittest.TestCase):
@@ -212,6 +224,9 @@ class TestSchemaMigration(unittest.TestCase):
         if with_explicit_metadata:
             record["metadata"]["skill_blacklist"] = ["explicit"]
         redis_client.storage["client:client:7"] = json.dumps(record)
+        # Every writer counts its records; a namespace without a counter, an
+        # id sequence or a client:1 reads as one that never held a record.
+        redis_client.storage["client:count"] = "1"
         return record
 
     def test_migrate_folds_legacy_keys_into_metadata(self):
@@ -240,6 +255,7 @@ class TestSchemaMigration(unittest.TestCase):
             "metadata": {"owner": "u", "message_blacklist": ["m:1"]},
         }
         redis_client.storage["client:client:7"] = json.dumps(record)
+        redis_client.storage["client:count"] = "1"
 
         db.migrate(from_version=1)
 
