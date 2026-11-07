@@ -40,6 +40,22 @@ _KEEPALIVE_OPTIONS = {
 CREATE_MARKER = "__hivemind_creating__"
 CREATE_MARKER_TTL = 30
 
+#: Value of the client index marker when this plugin built the index itself.
+CLIENT_INDEX_BUILT_BY_PLUGIN = "plugin"
+
+
+def _is_no_permission(error: Exception) -> bool:
+    """True when Redis refused a command under the login's ACL rules."""
+    if isinstance(error, getattr(redis.exceptions, "NoPermissionError", ())):
+        return True
+    return isinstance(error, redis.ResponseError) and str(error).startswith("NOPERM")
+
+
+def _client_id_sort_key(client_id: str):
+    """Numeric ids in numeric order, anything else after them by text."""
+    text = str(client_id)
+    return (0, int(text), "") if text.isdigit() else (1, 0, text)
+
 
 #: Lookup-path logger, resolved once.
 #:
@@ -92,7 +108,7 @@ def _iter_client_records_safely(db) -> "Iterable[tuple[str, str]]":
     active namespace. Used by ``migrate()`` to rewrite records in place.
     Skips empties; callers must handle ``CREATE_MARKER`` themselves.
     """
-    for key in db.redis.scan_iter(db._scan_pattern("client"), count=100):
+    for key in db._iter_client_keys():
         raw = db.redis.get(key)
         if not raw:
             continue
@@ -228,6 +244,8 @@ class RedisDB(AbstractRemoteDB):
             LOG.error("Redis connection health check failed during initialization")
             raise redis.ConnectionError("Failed to establish healthy Redis connection")
 
+        # Before the schema migration, which walks the records through it.
+        self.ensure_client_index()
         self._maybe_migrate()
 
     def _normalize_parameters(self):
@@ -464,6 +482,112 @@ class RedisDB(AbstractRemoteDB):
 
     def _search_doc_key(self, client_id: Union[str, int]) -> str:
         return self._key("idx", client_id)
+
+    def _client_ids_key(self) -> str:
+        """Set of the id of every client record in the namespace.
+
+        Every write path adds to it in the same transaction as the record, so
+        the records can be listed without SCAN. SCAN is keyless: Redis answers
+        it with every key name in the database whatever the login's key
+        patterns are, so a login confined to one namespace should not hold it.
+        Not matched by ``_scan_pattern("client")``, which ends in ``client:*``.
+        """
+        return self._key("client_ids")
+
+    def _client_ids_built_key(self) -> str:
+        """Exists once ``client_ids`` holds every record written before it.
+
+        Set by :meth:`ensure_client_index`, or by an administrator's backfill
+        for a login that may not SCAN. Its value only says who built it.
+        """
+        return self._key("client_ids_built")
+
+    def _iter_client_keys(self) -> Iterable[str]:
+        """Every client record key in the namespace, without SCAN.
+
+        Read from the ``client_ids`` set, in id order. Legacy cluster mode keeps
+        its key walk: its writes are not transactional across slots, so a set
+        there could not be kept exact.
+        """
+        if self._legacy_cluster_mode():
+            yield from self.redis.scan_iter(self._scan_pattern("client"), count=100)
+            return
+        ids = self.redis.smembers(self._client_ids_key())
+        for client_id in sorted(ids or (), key=_client_id_sort_key):
+            yield self._client_key(client_id)
+
+    def _namespace_may_hold_records(self) -> bool:
+        """False only for a namespace no writer has ever put a client in.
+
+        Both writers (this plugin and an operator that writes records
+        directly) count a new record in ``count``; ids come from ``id_seq``.
+        A namespace with neither, and no index, has nothing to walk.
+        """
+        for key in (self._counter_key(), self._id_sequence_key()):
+            raw = self.redis.get(key)
+            try:
+                if raw is not None and int(raw) > 0:
+                    return True
+            except (TypeError, ValueError):
+                return True
+        # Ids start at 1, so a first record outlives a counter that drifted.
+        return bool(self.redis.exists(self._client_ids_key())
+                    or self.redis.exists(self._client_key(1)))
+
+    def ensure_client_index(self) -> bool:
+        """Make sure ``client_ids`` lists every record. Idempotent.
+
+        Returns True when the index is known complete. A namespace marked
+        built, or one that never held a record, needs no walk. Otherwise the
+        records written before the index existed are found with one SCAN of
+        this namespace's ``client:*`` keys. A login that may not SCAN is
+        refused that walk: then this says so once, leaves the namespace
+        unmarked, and returns False. Lookups by name and api key are
+        unaffected; listing, brute-force search and :meth:`sync` see only the
+        clients already in the index until an administrator builds it (the
+        same walk with a login that may SCAN, then the marker).
+        """
+        if self._legacy_cluster_mode():
+            return True
+        built_key = self._client_ids_built_key()
+        try:
+            if self.redis.exists(built_key):
+                return True
+            if not self._namespace_may_hold_records():
+                self.redis.set(built_key, CLIENT_INDEX_BUILT_BY_PLUGIN, nx=True)
+                return True
+            if getattr(self, "_client_index_scan_refused", False):
+                # Asked once per process: sync() runs on every unknown key,
+                # and each refusal would be another ACL LOG entry.
+                return False
+            ids = [key.rsplit(":", 1)[-1]
+                   for key in self.redis.scan_iter(self._scan_pattern("client"), count=100)]
+        except Exception as e:
+            if _is_no_permission(e):
+                self._client_index_scan_refused = True
+                if not getattr(self, "_client_index_warned", False):
+                    self._client_index_warned = True
+                    LOG.warning(
+                        f"Client index for '{self._base_prefix()}' is not built and this "
+                        "login may not SCAN: listing clients, sync() and searches by other "
+                        "fields see only indexed clients until an administrator builds it "
+                        f"(add every client:<id> id to '{self._client_ids_key()}', then set "
+                        f"'{built_key}'). Lookups by name and api key are unaffected."
+                    )
+                return False
+            LOG.error(f"Failed to build the client index: {e}")
+            return False
+        try:
+            p = self._pipeline()
+            for client_id in ids:
+                p.sadd(self._client_ids_key(), client_id)
+            p.set(built_key, CLIENT_INDEX_BUILT_BY_PLUGIN)
+            p.execute()
+        except Exception as e:
+            LOG.error(f"Failed to build the client index: {e}")
+            return False
+        LOG.info(f"Built the client index for '{self._base_prefix()}' ({len(ids)} records)")
+        return True
 
     def _counter_key(self) -> str:
         return self._key("count")
@@ -815,6 +939,9 @@ class RedisDB(AbstractRemoteDB):
         do."""
         if from_version >= 2:
             return
+        # The records are walked through the client index; a direct call
+        # must find the same records __post_init__ would have.
+        self.ensure_client_index()
         legacy_keys = ("intent_blacklist", "skill_blacklist")
         for key, raw in _iter_client_records_safely(self):
             if raw == CREATE_MARKER:
@@ -920,6 +1047,7 @@ class RedisDB(AbstractRemoteDB):
             # Use pipeline for atomic operations
             p = self._pipeline()
             p.set(item_key, serialized_client)
+            p.sadd(self._client_ids_key(), str(client.client_id))
             p.sadd(self._name_index_key(client.name), str(client.client_id))
             p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
             # Feed RediSearch doc
@@ -991,6 +1119,9 @@ class RedisDB(AbstractRemoteDB):
 
             p = self._pipeline()
             p.set(item_key, json.dumps(data))
+            # The revoked record stays a record. Re-adding is idempotent and
+            # mends an index that missed it.
+            p.sadd(self._client_ids_key(), str(client_id))
 
             # Update indices
             p.srem(self._name_index_key(old_name), client_id)
@@ -1077,7 +1208,9 @@ class RedisDB(AbstractRemoteDB):
 
             p = self._pipeline()
             p.set(item_key, client.serialize())
-            
+            # Idempotent, and mends an index that missed this record.
+            p.sadd(self._client_ids_key(), str(client.client_id))
+
             # Update indices only if values changed
             if old_client.name != client.name:
                 p.srem(self._name_index_key(old_client.name), str(client.client_id))
@@ -1193,7 +1326,12 @@ class RedisDB(AbstractRemoteDB):
         log.debug("Searching for clients by indexed field '%s'", key)
         client_ids = self.redis.smembers(self._key(key, val))
         client_keys = [self._client_key(cid) for cid in client_ids]
-        res = self._load_clients(client_keys)
+        # Only records that still carry the value. An index entry left behind
+        # by a rename or a key rotation that bypassed this plugin must not
+        # answer for a record that moved on; sync() can no longer find such
+        # orphans by walking the keyspace, so the read path checks instead.
+        res = [client for client in self._load_clients(client_keys)
+               if getattr(client, key, None) == val]
         log.debug("Found %d clients by indexed field '%s'", len(res), key)
         return res
 
@@ -1209,7 +1347,7 @@ class RedisDB(AbstractRemoteDB):
             List of matching clients
         """
         res = []
-        for batch in self._iter_key_batches(self.redis.scan_iter(self._scan_pattern("client"), count=100)):
+        for batch in self._iter_key_batches(self._iter_client_keys()):
             for client in self._load_clients(batch):
                 if hasattr(client, key) and getattr(client, key) == val:
                     res.append(client)
@@ -1381,7 +1519,99 @@ class RedisDB(AbstractRemoteDB):
         Rebuild counters and secondary indexes from stored client records.
 
         This repairs drift after interrupted writes or manual Redis changes.
+
+        The records are found through the ``client_ids`` index, not SCAN, so
+        a login confined to this namespace can run it. Every index key a
+        record names (its name and api key sets, its search document, its
+        admission record) is dropped and rebuilt in one transaction, and ids
+        whose record is gone leave the index. An index set keyed by a value no
+        record carries any more cannot be found without walking the keyspace;
+        it is left in place and is harmless, because searches only return
+        records that still carry the value searched for. A stale create
+        marker that never reached the index expires on its own
+        (``CREATE_MARKER_TTL``). Refuses to run, and returns False, while the
+        index is not known complete (see :meth:`ensure_client_index`): a
+        rebuild from part of the records would undercount ``count``.
+        Legacy cluster mode keeps its key walk.
         """
+        if self._legacy_cluster_mode():
+            return self._sync_by_key_walk()
+        try:
+            if self.redisearch_available:
+                self._setup_redisearch_index()
+
+            if not self.ensure_client_index():
+                LOG.warning(f"Redis database sync skipped for '{self.index_prefix}': "
+                            "the client index is not built yet")
+                return False
+
+            ids_key = self._client_ids_key()
+            ids = sorted(self.redis.smembers(ids_key) or (), key=_client_id_sort_key)
+            client_records = []
+            gone = []
+            max_client_id = 0
+            for batch in self._iter_key_batches([self._client_key(cid) for cid in ids]):
+                for item_key, client_data in zip(batch, self._get_many(batch)):
+                    client_id = item_key.rsplit(":", 1)[-1]
+                    if not client_data:
+                        gone.append(client_id)
+                        continue
+                    if client_data == CREATE_MARKER:
+                        self.redis.delete(item_key)
+                        gone.append(client_id)
+                        continue
+                    try:
+                        client = self._deserialize_client(client_data)
+                        self._ensure_client_attributes(client)
+                        client_records.append(client)
+                        max_client_id = max(max_client_id, int(client.client_id))
+                    except Exception as e:
+                        LOG.warning(f"Skipping invalid client record '{item_key}': {e}")
+
+            stale_keys = set()
+            api_keys = set()
+            for client in client_records:
+                if client.name:
+                    stale_keys.add(self._name_index_key(client.name))
+                stale_keys.add(self._api_key_index_key(client.api_key))
+                stale_keys.add(self._search_doc_key(client.client_id))
+                if client.api_key and client.api_key != "revoked":
+                    api_keys.add(client.api_key)
+
+            p = self._pipeline()
+            for key in sorted(stale_keys):
+                p.delete(key)
+            for client_id in gone:
+                p.srem(ids_key, client_id)
+                p.delete(self._search_doc_key(client_id))
+            # sync() repairs drift, and the admission cache is derived state,
+            # so each live key's record is dropped and rebuilt lazily.
+            self._invalidate_api_key_records(*sorted(api_keys), writer=p)
+
+            p.set(self._counter_key(), len(client_records))
+            p.set(self._id_sequence_key(), max_client_id)
+
+            for client in client_records:
+                if client.api_key != "revoked" and client.name:
+                    p.sadd(self._name_index_key(client.name), str(client.client_id))
+                p.sadd(self._api_key_index_key(client.api_key), str(client.client_id))
+                p.hset(self._search_doc_key(client.client_id), mapping={
+                    "name": client.name,
+                    "api_key": client.api_key,
+                })
+
+            p.execute()
+            # Full-rebuild committed: drop the whole in-process cache after,
+            # not before, so no lookup can re-cache pre-rebuild state mid-sync.
+            self._api_key_cache_invalidate()
+            LOG.info(f"Redis database sync complete for '{self.index_prefix}' ({len(client_records)} clients)")
+            return True
+        except Exception as e:
+            LOG.error(f"Failed to sync Redis database: {e}")
+            return False
+
+    def _sync_by_key_walk(self):
+        """Legacy cluster mode's sync: finds records and index keys with SCAN."""
         try:
             if self.redisearch_available:
                 self._setup_redisearch_index()
@@ -1525,7 +1755,7 @@ class RedisDB(AbstractRemoteDB):
         Returns:
             An iterator over the clients in the database.
         """
-        for batch in self._iter_key_batches(self.redis.scan_iter(self._scan_pattern("client"), count=100)):
+        for batch in self._iter_key_batches(self._iter_client_keys()):
             for client in self._load_clients(batch):
                 yield client
 

@@ -185,6 +185,17 @@ there. This backend accepts it, but does not use it for Redis namespacing.
   admin flows only see active clients.
 - `sync()` repairs drift by rebuilding counters, Redis set indexes, and
   RediSearch hash documents from stored client records.
+- Listing, `sync()`, the schema migration and searches by unindexed fields
+  find records through the `<prefix>:client_ids` set, written in the same
+  transaction as each record, so the plugin needs no SCAN. SCAN is keyless:
+  Redis answers it with every key name in the database whatever the login's
+  ACL key patterns are. A namespace written by an older release is indexed
+  once at start-up when the login may SCAN; otherwise an administrator builds
+  the index once (see [operations: logins without SCAN](docs/operations.md#logins-without-scan)).
+  Legacy cluster mode keeps scan-based listing.
+- Indexed searches by `name` and `api_key` return only records that still
+  carry the value searched for, so an index entry left behind by a change
+  made outside this plugin cannot answer for another record.
 - A lookup that misses the per-key admission record refills it
   compare-and-set: it reads the key's invalidation epoch before the
   authoritative lookup, and writes the record under `WATCH` only if the epoch
@@ -271,8 +282,8 @@ Notes:
 - `--clear-target` clears keys in the target namespace before copying
 - `--source-cluster-hash-tag` lets you migrate from one tagged namespace to
   another
-- the migration tool copies raw client records, then runs `sync()` on the
-  target namespace
+- the migration tool copies raw client records, adds them to the target's
+  client index, then runs `sync()` on the target namespace
 
 See [docs/cluster_consistency.md](docs/cluster_consistency.md) for more detail.
 

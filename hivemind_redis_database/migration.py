@@ -29,7 +29,9 @@ def _load_config(path: str, plugin_name: str) -> Dict:
 
 
 def _iter_client_records(db: RedisDB) -> Iterable[Tuple[str, str]]:
-    for key in db.redis.scan_iter(db._scan_pattern("client"), count=100):
+    """Every record of ``db``'s namespace: its client index, or in legacy
+    cluster mode its key walk (see ``RedisDB._iter_client_keys``)."""
+    for key in db._iter_client_keys():
         value = db.redis.get(key)
         if not value:
             continue
@@ -65,6 +67,8 @@ def migrate_namespace(
                 target_db.redis.delete(key)
         target_db.redis.delete(target_db._counter_key())
         target_db.redis.delete(target_db._id_sequence_key())
+        target_db.redis.delete(target_db._client_ids_key())
+        target_db.redis.delete(target_db._client_ids_built_key())
 
     for source_key, value in _iter_client_records(source_db):
         if value == CREATE_MARKER:
@@ -74,9 +78,13 @@ def migrate_namespace(
         client_id = source_key.split(":")[-1]
         if not dry_run:
             target_db.redis.set(target_db._client_key(client_id), value)
+            # The target's sync() finds records through its client index.
+            target_db.redis.sadd(target_db._client_ids_key(), client_id)
         summary.copied_records += 1
 
     if not dry_run:
+        if not target_db.ensure_client_index():
+            raise RuntimeError("Target namespace client index could not be built")
         if not target_db.sync():
             raise RuntimeError("Target namespace sync failed after copy")
 

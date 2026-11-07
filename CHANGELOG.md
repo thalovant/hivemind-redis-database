@@ -1,4 +1,27 @@
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
+
 # Changelog
+
+## 0.1.1a8+thalovant.2 — client records listed without SCAN (2026-11-07)
+
+- New set `<prefix>:client_ids` holds the id of every client record. `add_item`,
+  `update_client` and `remove_client` add to it in the same MULTI/EXEC as the
+  record (update and revoke re-add, which mends an index that missed one).
+- `__iter__`, `sync()`, the v1 -> v2 schema migration and `_search_brute_force`
+  read that set instead of `SCAN MATCH <prefix>:client:*`, in id order.
+- `ensure_client_index()` runs at start-up: a namespace marked
+  `<prefix>:client_ids_built`, or one that never held a record, needs no walk;
+  an older namespace is walked once with SCAN when the login may, then marked.
+  Refused (NOPERM), it warns once and leaves the namespace for an
+  administrator to index.
+- `sync()` no longer walks the keyspace for index keys. It drops and rebuilds
+  every index key a record names, invalidates each live key's admission
+  record (moving its epoch), and removes ids whose record is gone. It returns
+  False without writing while the index is not marked built.
+- Indexed `name`/`api_key` searches drop records that no longer carry the
+  value, so an orphaned index entry cannot answer for another record.
+- `hivemind-redis-migrate-cluster` adds copied records to the target's index.
+- Legacy cluster mode (no `cluster_hash_tag`) is unchanged and still scans.
 
 ## 0.1.1a8+thalovant.1 — admission cache write is compare-and-set against revocation (2026-11-03)
 

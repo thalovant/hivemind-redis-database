@@ -723,10 +723,34 @@ class RedisDBTests(unittest.TestCase):
         self.assertEqual(redis_client.smembers("client:name:alpha"), {"1"})
         self.assertEqual(redis_client.smembers("client:api_key:alpha-key"), {"1"})
         self.assertEqual(redis_client.smembers("client:api_key:revoked"), {"2"})
+        self.assertEqual(redis_client.hashes["client:idx:1"]["name"], "alpha")
+        # The marker's id left the index with the marker.
+        self.assertEqual(redis_client.smembers("client:client_ids"), {"1", "2"})
+        # An index set keyed by a value no record carries cannot be found
+        # without walking the keyspace. It stays, and answers nothing.
+        self.assertEqual(redis_client.smembers("client:name:stale"), {"999"})
+        self.assertEqual(db.search_by_value("name", "stale"), [])
+        self.assertEqual(db.search_by_value("api_key", "stale"), [])
+
+    def test_legacy_cluster_sync_still_walks_the_keyspace(self):
+        redis_client = FakeRedis()
+        db = self.build_db(redis_client, is_cluster=True)
+        db.redisearch_available = False
+
+        redis_client.storage["client:client:1"] = Client(client_id=1, api_key="alpha-key", name="alpha").serialize()
+        redis_client.storage["client:client:3"] = "__hivemind_creating__"
+        redis_client.storage["client:name:stale"] = {"999"}
+        redis_client.storage["client:api_key:stale"] = {"999"}
+        redis_client.hashes["client:idx:999"] = {"name": "stale", "api_key": "stale"}
+
+        self.assertTrue(db.sync())
+
+        self.assertEqual(len(db), 1)
+        self.assertIsNone(redis_client.get("client:client:3"))
         self.assertEqual(redis_client.smembers("client:name:stale"), set())
         self.assertEqual(redis_client.smembers("client:api_key:stale"), set())
-        self.assertEqual(redis_client.hashes["client:idx:1"]["name"], "alpha")
         self.assertNotIn("client:idx:999", redis_client.hashes)
+        self.assertNotIn("client:client_ids", redis_client.storage)
 
 
 class TestRedisDBForwardCompat(unittest.TestCase):

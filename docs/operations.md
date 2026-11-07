@@ -1,3 +1,5 @@
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
+
 # Operations
 
 ## Backup
@@ -35,8 +37,30 @@ interrupted write or manual key deletion), run:
 db.sync()
 ```
 
-`sync()` scans all `<prefix>:client:<id>` hashes and rebuilds counters,
-set indexes, and RediSearch documents.
+`sync()` reads every record listed in `<prefix>:client_ids` and rebuilds
+counters, set indexes, admission records and RediSearch documents, without
+SCAN (see [architecture: sync()](architecture.md#sync)).
+
+## Logins without SCAN
+
+A Redis login confined to one namespace (ACL key patterns `~<prefix>:*`)
+should not hold SCAN, which lists every key name in the database. This
+plugin needs none once the namespace's client index is built:
+`GET SET SETNX MGET INCR(BY) EXPIRE DEL EXISTS SADD SREM SMEMBERS HSET`,
+`WATCH MULTI EXEC UNWATCH`, and `PING`/`HELLO`/`CLIENT SETINFO`. Its start-up
+probes (`INFO`, `CLUSTER INFO`, `MODULE LIST`, `FT._LIST`) may be refused; it
+then runs single-node without RediSearch.
+
+Upgrading a namespace written by an older release under such a login: build
+the index once with a login that may SCAN, before or after the upgrade.
+
+```bash
+redis-cli --scan --pattern '<prefix>:client:*' | sed 's/.*://' \
+  | xargs -r redis-cli SADD '<prefix>:client_ids'
+redis-cli SET '<prefix>:client_ids_built' admin
+```
+
+Until then the plugin warns once at start-up, and `sync()` declines to run.
 
 ## Migrating from another backend
 
