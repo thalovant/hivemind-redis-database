@@ -894,6 +894,14 @@ class RedisDB(AbstractRemoteDB):
         if hasattr(self, "_check_forward_compat"):
             self._check_forward_compat(stored)
         if stored < target:
+            if not self.ensure_client_index():
+                # The records are walked through the client index. Stamping
+                # the new version over a partial walk would leave unindexed
+                # records unmigrated for good; reads still fold their legacy
+                # fields (Client.deserialize), so wait for a complete index.
+                LOG.warning("RedisDB: schema migration of '%s' waits for the client "
+                            "index; the namespace stays at v%d", self._base_prefix(), stored)
+                return
             LOG.info("RedisDB: migrating namespace '%s' schema v%d -> v%d",
                      self._base_prefix(), stored, target)
             # Bundle the per-record rewrites and the schema sentinel SET
@@ -927,7 +935,14 @@ class RedisDB(AbstractRemoteDB):
         part of the ``Client`` data model); any residual
         ``metadata["message_blacklist"]`` from a prior migration run
         is also stripped.
+
+        Raises ``RuntimeError`` when the client index is not known complete
+        (see :meth:`ensure_client_index`): the records are walked through it.
         """
+        if from_version < 2 and not self.ensure_client_index():
+            raise RuntimeError(
+                f"Client index for '{self._base_prefix()}' is not built; "
+                "migrating would skip the records it does not list")
         self._migrate_into_pipeline(self.redis, from_version=from_version)
 
     def _migrate_into_pipeline(self, writer, from_version: int) -> None:
@@ -939,9 +954,8 @@ class RedisDB(AbstractRemoteDB):
         do."""
         if from_version >= 2:
             return
-        # The records are walked through the client index; a direct call
-        # must find the same records __post_init__ would have.
-        self.ensure_client_index()
+        # Callers have checked that the client index is complete
+        # (_maybe_migrate, migrate): the records are walked through it.
         legacy_keys = ("intent_blacklist", "skill_blacklist")
         for key, raw in _iter_client_records_safely(self):
             if raw == CREATE_MARKER:

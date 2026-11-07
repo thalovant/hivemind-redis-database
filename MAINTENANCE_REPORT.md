@@ -20,7 +20,9 @@ Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client r
   patterns can still list every key name in the database with it. Without SCAN
   the plugin's listing and repair paths failed.
 - **Verification:**
-  - `pytest tests`: 126 passed, 8 skipped (was 112 passed, 6 skipped). Four
+  - `pytest tests`: 130 passed, 8 skipped (was 112 passed, 6 skipped); with
+    a real Redis 132 passed. Review of #15: the schema migration and the
+    cluster migration CLI now refuse an index not marked built (4 tests). Four
     existing tests changed: the sync test now asserts the orphaned set is left
     and answers nothing (the old assertion moved to a new legacy-cluster test,
     which still removes it); the migration fakes learned `get`/`expire` and

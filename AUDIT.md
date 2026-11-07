@@ -37,6 +37,10 @@ Behaviour changes, deliberate:
 - `sync()` no longer deletes a stale create marker that never reached the
   index; it expires after `CREATE_MARKER_TTL` (30 s).
 - `sync()` returns False without writing while the index is not marked built.
+- The v1 -> v2 migration (`_maybe_migrate`, `migrate`) and the cluster
+  migration CLI refuse to run over an index not marked built, so a partial
+  walk can neither stamp `schema_version` 2 nor copy part of a namespace
+  (review of #15; `SchemaMigrationWaitsForTheIndexTests`).
 
 Still open:
 - `ensure_client_index` decides that a namespace never held a record from

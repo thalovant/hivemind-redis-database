@@ -262,6 +262,59 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(fake.scan_calls, 0)
 
 
+class SchemaMigrationWaitsForTheIndexTests(unittest.TestCase):
+    """v1 -> v2 walks the records through the index: never stamp v2 over a partial walk."""
+
+    def seed_v1(self, fake):
+        legacy_record(fake, 1, "k1", "one")
+        record = json.loads(fake.storage["client:client:1"])
+        record["intent_blacklist"] = ["i:1"]
+        fake.storage["client:client:1"] = json.dumps(record)
+
+    def test_start_up_leaves_an_unindexed_namespace_at_v1(self):
+        fake = NoScanRedis()
+        self.seed_v1(fake)
+        db = build_db(fake)
+
+        db._maybe_migrate()
+
+        self.assertNotIn("client:schema_version", fake.storage)
+        self.assertIn("intent_blacklist", json.loads(fake.storage["client:client:1"]))
+        # Reads still fold the legacy field.
+        self.assertEqual(db.get_client_by_api_key("k1").name, "one")
+
+    def test_a_direct_migrate_refuses_a_partial_index(self):
+        fake = NoScanRedis()
+        self.seed_v1(fake)
+        with self.assertRaises(RuntimeError):
+            build_db(fake).migrate(from_version=1)
+
+    def test_once_indexed_the_namespace_migrates_and_is_stamped(self):
+        fake = NoScanRedis()
+        self.seed_v1(fake)
+        fake.sadd("client:client_ids", 1)
+        fake.set("client:client_ids_built", "operator")
+
+        build_db(fake)._maybe_migrate()
+
+        self.assertEqual(int(fake.storage["client:schema_version"]), 2)
+        stored = json.loads(fake.storage["client:client:1"])
+        self.assertNotIn("intent_blacklist", stored)
+        self.assertEqual(stored["metadata"]["intent_blacklist"], ["i:1"])
+
+    def test_the_cluster_migration_refuses_an_unindexed_source(self):
+        from hivemind_redis_database.migration import migrate_namespace
+
+        source = NoScanRedis()
+        legacy_record(source, 1, "k1", "one")
+        target = NoScanRedis()
+        target_db = build_db(target, prefix="target")
+
+        with self.assertRaises(RuntimeError):
+            migrate_namespace(build_db(source), target_db)
+        self.assertNotIn("target:client:1", target.storage)
+
+
 @unittest.skipUnless(os.getenv("REDIS_ACL_TEST_ADMIN_URL"),
                      "set REDIS_ACL_TEST_ADMIN_URL to a throwaway Redis's admin URL")
 class RealRedisWithoutScanTests(unittest.TestCase):

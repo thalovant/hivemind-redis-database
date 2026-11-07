@@ -51,6 +51,14 @@ def migrate_namespace(
     if source_db._base_prefix() == target_db._base_prefix():
         raise ValueError("Source and target namespaces must be different")
 
+    # Outside legacy cluster mode the source is read through its client
+    # index, so a partial index would copy part of the records and report
+    # success.
+    if not source_db.ensure_client_index():
+        raise RuntimeError(
+            f"Source namespace '{source_db._base_prefix()}' client index is not built; "
+            "build it with a login that may SCAN before migrating")
+
     summary = MigrationSummary(
         source_namespace=source_db._base_prefix(),
         target_namespace=target_db._base_prefix(),

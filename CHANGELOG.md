@@ -20,7 +20,11 @@ Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client r
   False without writing while the index is not marked built.
 - Indexed `name`/`api_key` searches drop records that no longer carry the
   value, so an orphaned index entry cannot answer for another record.
-- `hivemind-redis-migrate-cluster` adds copied records to the target's index.
+- `hivemind-redis-migrate-cluster` adds copied records to the target's index,
+  and refuses a source whose index is not built.
+- The v1 -> v2 schema migration waits for a complete index: at start-up it
+  leaves an unindexed namespace at v1 (reads still fold the legacy fields)
+  instead of stamping v2 over a partial walk; a direct `migrate()` raises.
 - Legacy cluster mode (no `cluster_hash_tag`) is unchanged and still scans.
 
 ## 0.1.1a8+thalovant.1 — admission cache write is compare-and-set against revocation (2026-11-03)
