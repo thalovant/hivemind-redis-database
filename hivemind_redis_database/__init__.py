@@ -392,9 +392,11 @@ class RedisDB(AbstractRemoteDB):
         Must run AFTER the corresponding Redis write commits: the Redis-side
         record rides the mutation's transaction via
         ``_invalidate_api_key_records(writer=...)``, but this in-process layer
-        cannot, so call sites invalidate it right after ``p.execute()``. Also
-        bumps the cache generation so an in-flight lookup that read Redis
-        before the commit cannot store its stale result afterwards.
+        cannot, so call sites invalidate it right after ``p.execute()``,
+        whether or not it raised: Redis does not roll back the commands of a
+        transaction that ran before one of them failed. Also bumps the cache
+        generation so an in-flight lookup that read Redis before the commit
+        cannot store its stale result afterwards.
         """
         if self.api_key_cache_ttl <= 0:
             return
@@ -1071,10 +1073,15 @@ class RedisDB(AbstractRemoteDB):
             })
             p.incr(self._counter_key())
             self._invalidate_api_key_records(client.api_key, writer=p)
-            p.execute()
-            # After commit: the in-process layer cannot ride the transaction,
-            # and a cached negative lookup must not outlive the new key.
-            self._api_key_cache_invalidate(client.api_key)
+            try:
+                p.execute()
+            finally:
+                # After commit: the in-process layer cannot ride the
+                # transaction, and a cached negative lookup must not outlive
+                # the new key. Also when EXEC raised: a failed command does
+                # not undo the ones that ran, so the cached answer may
+                # already be wrong.
+                self._api_key_cache_invalidate(client.api_key)
 
             LOG.debug(f"Successfully added client '{client.client_id}'")
             return True
@@ -1150,11 +1157,14 @@ class RedisDB(AbstractRemoteDB):
             # next sync: drop the cached record in the same transaction.
             self._invalidate_api_key_records(old_api_key, writer=p)
 
-            p.execute()
-            # After commit, never before: invalidating the in-process layer
-            # pre-commit would let a concurrent lookup re-cache the
-            # still-unrevoked value.
-            self._api_key_cache_invalidate(old_api_key)
+            try:
+                p.execute()
+            finally:
+                # After commit, never before: invalidating the in-process
+                # layer pre-commit would let a concurrent lookup re-cache the
+                # still-unrevoked value. Also when EXEC raised, since the
+                # commands that did run are not rolled back (see add_item).
+                self._api_key_cache_invalidate(old_api_key)
 
             LOG.info(f"Successfully revoked client '{client_id}'")
             return True
@@ -1243,11 +1253,14 @@ class RedisDB(AbstractRemoteDB):
             self._invalidate_api_key_records(
                 old_client.api_key, client.api_key, writer=p)
 
-            p.execute()
-            # After commit (see remove_client). Both keys, even when equal:
-            # a same-key update still rewrites the record.
-            self._api_key_cache_invalidate(old_client.api_key)
-            self._api_key_cache_invalidate(client.api_key)
+            try:
+                p.execute()
+            finally:
+                # After commit, or after a failed EXEC (see remove_client).
+                # Both keys, even when equal: a same-key update still
+                # rewrites the record.
+                self._api_key_cache_invalidate(old_client.api_key)
+                self._api_key_cache_invalidate(client.api_key)
             LOG.debug(f"Successfully updated client '{client.client_id}'")
             return True
         except Exception as e:
@@ -1614,10 +1627,13 @@ class RedisDB(AbstractRemoteDB):
                     "api_key": client.api_key,
                 })
 
-            p.execute()
-            # Full-rebuild committed: drop the whole in-process cache after,
-            # not before, so no lookup can re-cache pre-rebuild state mid-sync.
-            self._api_key_cache_invalidate()
+            try:
+                p.execute()
+            finally:
+                # Full rebuild committed, or EXEC raised part-way through it:
+                # drop the whole in-process cache after, not before, so no
+                # lookup can re-cache pre-rebuild state mid-sync.
+                self._api_key_cache_invalidate()
             LOG.info(f"Redis database sync complete for '{self.index_prefix}' ({len(client_records)} clients)")
             return True
         except Exception as e:

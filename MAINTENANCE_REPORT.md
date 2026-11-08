@@ -1,7 +1,39 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-[previous header] Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compare-and-set against revocation.
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Drop in-process API-key cache entries when a write's EXEC raises (CodeRabbit follow-up on #8).
+[previous header] Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
 
 # Maintenance Report
+
+## 2026-11-07 — in-process cache dropped after a failed write too
+
+- **What:** `add_item`, `remove_client`, `update_client` and `sync()` call
+  `_api_key_cache_invalidate` in a `finally` around `p.execute()`
+  (`hivemind_redis_database/__init__.py` l.1076, l.1160, l.1256, l.1630), so
+  the in-process TTL cache is dropped, and its generation bumped, whether the
+  transaction committed or raised. No Redis command added or changed: no
+  SCAN, KEYS, EVAL, EVALSHA or SCRIPT.
+- **Why:** a command that fails inside MULTI/EXEC does not undo the ones that
+  ran before it, so a write can half-land and still raise. The in-process
+  invalidation used to run only after a clean `execute()`, leaving a cached
+  admission for a revoked key, or a cached denial for a new key, until the
+  TTL expired. It only matters with `api_key_cache_ttl > 0` (default 0).
+  Found by CodeRabbit on #8 (outside-diff comment).
+- **Verification:** `pytest tests`: 134 passed, 8 skipped (was 130 passed).
+  `TestFailedWriteInvalidation` in `tests/test_api_key_cache.py` (4 tests) fails
+  without the change. With a throwaway Redis 8.2 the two
+  `RealRedisWithoutScanTests` (no SCAN, no scripting) pass.
+  `SingleRedisIntegrationTests.test_single_instance_crud_and_search` fails
+  against that image both with and without the change: it finds no RediSearch
+  hit for `alpha`. That is environmental and unrelated.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5.
+- **Actions Taken:** checked both #8 outside-diff findings against the current
+  code, moved the in-process invalidation into `finally`, wrote the
+  failure-injection tests, ran the suite on fakes and on a throwaway Redis.
+- **Oversight:** coordinating agent review and CI before merge; no version
+  change, no release.
+
 
 ## 2026-11-07 — client records listed without SCAN
 

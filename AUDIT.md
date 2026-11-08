@@ -1,7 +1,31 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-[previous header] Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Admission cache write is compare-and-set against revocation.
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Drop in-process API-key cache entries when a write's EXEC raises (CodeRabbit follow-up on #8).
+[previous header] Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
 
 # Audit
+
+## 2026-11-07 — in-process API-key cache survived a failed write (fixed)
+
+Finding (CodeRabbit, #8, outside-diff): the write paths dropped the in-process
+TTL cache only after a clean `p.execute()`. Redis does not roll back the
+commands of a MULTI/EXEC that ran before one failed, so `execute()` can raise
+after the record changed, and the cached answer was then kept until
+`api_key_cache_ttl` expired. Fix: `_api_key_cache_invalidate` runs in a
+`finally` (`hivemind_redis_database/__init__.py` l.1076 `add_item`, l.1160
+`remove_client`, l.1256 `update_client`, l.1630 `sync`). Evidence:
+`tests/test_api_key_cache.py` `TestFailedWriteInvalidation` (l.237).
+`update_last_seen`, also named in the finding, no longer exists here (removed
+in 5b93a5e); last-seen writes reach `update_client`.
+
+Not changed, by design:
+- The second #8 finding asked for a Redis-side compare-and-set on the
+  admission-record repair. The refill has been one since 43c0215
+  (`_refill_admission_record` l.1412, WATCH on `api_key_epoch:<key>` and then
+  MULTI/EXEC, no scripting). The cleanup of an unreadable record
+  (l.1499) is still a plain DEL. Deleting a newer record there only costs one
+  extra authoritative read, because the record is derived state that is never
+  trusted without the key check. It can neither admit a revoked key nor
+  refuse a valid one.
+
 
 ## 2026-11-07 — SCAN on the listing, sync and migration paths (fixed)
 
