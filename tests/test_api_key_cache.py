@@ -215,5 +215,76 @@ class TestMutationInvalidation(unittest.TestCase):
         self.assertFalse(db._api_key_cache_get("K")[0])
 
 
+def _failing_exec_harness(db):
+    """Like _mutation_harness, but EXEC raises after recording itself.
+
+    A command that fails inside MULTI/EXEC does not undo the ones that ran
+    before it, so the write may have half-landed when ``execute`` raises.
+    """
+    import redis
+
+    events = _mutation_harness(db)
+    pipe = db._pipeline()
+
+    def _fail():
+        events.append("execute")
+        raise redis.ResponseError("WRONGTYPE Operation against a key")
+
+    pipe.execute.side_effect = _fail
+    return events
+
+
+class TestFailedWriteInvalidation(unittest.TestCase):
+    """A write whose EXEC raised still drops the in-process entries it may
+    have made wrong, and still bumps the generation for in-flight lookups."""
+
+    def test_failed_add_evicts_cached_negative(self):
+        db = _db(ttl=10)
+        events = _failing_exec_harness(db)
+        _store(db, "NEW", None)
+        db._claim_item_key = lambda key: True
+        db._get_next_client_id = lambda: 7
+        gen = db._api_key_cache_gen_snapshot()
+        self.assertFalse(db.add_item(_fake_client(client_id=None, api_key="NEW")))
+        self.assertEqual(events, ["execute", ("invalidate", "NEW")])
+        self.assertFalse(db._api_key_cache_get("NEW")[0])
+        self.assertGreater(db._api_key_cache_gen, gen)
+
+    def test_failed_revoke_evicts_cached_admission(self):
+        db = _db(ttl=10)
+        events = _failing_exec_harness(db)
+        _store(db, "OLD", "admitted-client")
+        db.redis.get.return_value = json.dumps(
+            {"name": "n", "api_key": "OLD", "metadata": {}}
+        )
+        self.assertFalse(db.remove_client("1"))
+        self.assertEqual(events, ["execute", ("invalidate", "OLD")])
+        self.assertFalse(db._api_key_cache_get("OLD")[0])
+
+    def test_failed_update_evicts_both_keys(self):
+        db = _db(ttl=10)
+        events = _failing_exec_harness(db)
+        _store(db, "OLD", "old-client")
+        _store(db, "NEW", None)
+        db.redis.get.return_value = "old-serialized"
+        db._deserialize_client = lambda raw: _fake_client(api_key="OLD")
+        self.assertFalse(db.update_client(_fake_client(api_key="NEW")))
+        self.assertEqual(
+            events, ["execute", ("invalidate", "OLD"), ("invalidate", "NEW")]
+        )
+        self.assertFalse(db._api_key_cache_get("OLD")[0])
+        self.assertFalse(db._api_key_cache_get("NEW")[0])
+
+    def test_failed_sync_clears_cache(self):
+        db = _db(ttl=10)
+        events = _failing_exec_harness(db)
+        _store(db, "K", "client")
+        db.redisearch_available = False
+        db.redis.scan_iter.return_value = []
+        self.assertFalse(db.sync())
+        self.assertEqual(events, ["execute", ("invalidate", None)])
+        self.assertFalse(db._api_key_cache_get("K")[0])
+
+
 if __name__ == "__main__":
     unittest.main()
