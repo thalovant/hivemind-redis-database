@@ -1,7 +1,16 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Drop in-process API-key cache entries when a write's EXEC raises (CodeRabbit follow-up on #8).
-[previous header] Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-
 # Maintenance Report
+
+## 2026-11-15 - Removed the per-file author/date/motive headers
+
+Rationale: the workspace owner withdrew the per-file author/date/motive header convention (hard rule: no such header anywhere). Removed the header line (and the blank line after it) from every file that carried one, 10 files in this change. No code, behaviour or documentation content changed; only the header lines.
+
+Verification: a case-insensitive `git grep` for the header keyword (the two words "last" and "edit" joined by a space) finds nothing after the change; `git diff --stat` shows deletions only.
+
+### Transparency report
+
+- **AI model**: Claude Sonnet 5.5 (Claude Code).
+- **Actions taken**: ran a script that deletes the header line (plain, in `<!-- -->` or `/* */` comments, or marked as a previous header) and the blank line that followed a leading header; edited this report and AUDIT.md.
+- **Oversight**: requested by the owner; the diff was reviewed as deletions only; CI runs on the pull request.
 
 ## 2026-11-07 — in-process cache dropped after a failed write too
 

@@ -1,7 +1,8 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Drop in-process API-key cache entries when a write's EXEC raises (CodeRabbit follow-up on #8).
-[previous header] Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-
 # Audit
+
+## 2026-11-15 - Per-file author/date/motive headers
+
+Finding: 10 files carried an author/date/motive header line that the owner has withdrawn. State: fixed in this change (a case-insensitive `git grep` for the header keyword is empty). No code path was touched, so no test result changes; the repository's CI on the pull request is the test of record.
 
 ## 2026-11-07 — in-process API-key cache survived a failed write (fixed)
 
