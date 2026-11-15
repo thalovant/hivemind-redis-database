@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-
 # Changelog
 
 ## 0.1.1a8+thalovant.2 — client records listed without SCAN (2026-11-07)

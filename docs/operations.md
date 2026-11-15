@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-
 # Operations
 
 ## Backup

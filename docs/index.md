@@ -1,6 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-[previous header] Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Point the dependency-security entry at the 0.1.1a8 sync.
-
 # hivemind-redis-database Documentation
 
 [RedisDB](../hivemind_redis_database/__init__.py) provides this package's runtime implementation.

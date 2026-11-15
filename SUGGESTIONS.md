@@ -1,6 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: List, search and sync client records through an index set, so a login without SCAN runs every path.
-[previous header] Last Edit: Codex - 2026-10-25 - Motive: Record verified dependency security and compatibility constraints.
-
 # Suggestions
 
 | Problem | Proposal | Impact |
